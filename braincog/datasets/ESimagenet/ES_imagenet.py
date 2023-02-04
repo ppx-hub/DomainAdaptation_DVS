@@ -65,10 +65,11 @@ class ESImagenet_Dataset(data.Dataset):
         t = dataneg[:, 2] - 1
         input[1, t, x, y] = 1
 
-        reshape = input[:, :, 16:240, 16:240].permute(0, 1, 2, 3).contiguous()
+        reshape = input[:, :, 16:240, 16:240].permute(1, 0, 2, 3).contiguous()
         if self.transform is not None:
             reshape = self.transform(reshape)
-        label = torch.tensor([classnum])
+        # label = torch.tensor([classnum])
+        label = classnum
         return reshape, label
 
     def __len__(self):

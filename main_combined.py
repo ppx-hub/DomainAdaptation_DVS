@@ -1,17 +1,7 @@
-# -*- coding: utf-8 -*-            
-# Time : 2022/9/29 15:27
-# Author : Regulus
-# FileName: main_transfer.py
-# Explain:
-# Software: PyCharm
-
 import argparse
-import math
 import time
-import CKA
-import numpy
+
 import timm.models
-import random as rd
 import yaml
 import os
 import logging
@@ -29,13 +19,12 @@ from braincog.model_zoo.vgg_snn import VGG_SNN
 from braincog.model_zoo.resnet19_snn import resnet19
 from braincog.utils import save_feature_map, setup_seed
 from braincog.base.utils.visualization import plot_tsne_3d, plot_tsne, plot_confusion_matrix
-
+from itertools import cycle
 import torch
 import torch.nn as nn
 import torchvision.utils
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
-from rgb_hsv import RGB_HSV
-import matplotlib.pyplot as plt
+
 from timm.data import ImageDataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
 from timm.models import load_checkpoint, create_model, resume_checkpoint, convert_splitbn_model
 from timm.utils import *
@@ -56,12 +45,11 @@ config_parser = parser = argparse.ArgumentParser(description='Training Config', 
 parser.add_argument('-c', '--config', default='', type=str, metavar='FILE',
                     help='YAML config file specifying default arguments')
 
-
 parser = argparse.ArgumentParser(description='SNN Training and Evaluating')
 
 # Model parameters
 parser.add_argument('--source-dataset', default='cifar10', type=str)
-parser.add_argument('--target-dataset', default='dvsc10', type=str)
+parser.add_argument('--target-dataset', default='cifar10', type=str)
 parser.add_argument('--model', default='cifar_convnet', type=str, metavar='MODEL',
                     help='Name of model to train (default: "countception"')
 parser.add_argument('--pretrained', action='store_true', default=False,
@@ -328,15 +316,9 @@ parser.add_argument('--conf-mat', action='store_true')
 parser.add_argument('--suffix', type=str, default='',
                     help='Add an additional suffix to the save path (default: \'\')')
 
-# Transfer Learning loss choice
-parser.add_argument('--domain-loss', action='store_true',
-                    help='add domain loss')
-parser.add_argument('--semantic-loss', action='store_true',
-                    help='add semantic loss')
-parser.add_argument('--domain-loss-coefficient', type=float, default=1.0,
-                    help='domain loss coefficient(default: 1.0)')
-parser.add_argument('--semantic-loss-coefficient', type=float, default=0.5,
-                    help='domain loss coefficient(default: 0.5)')
+# for reconstructing es-imagenet
+parser.add_argument('--reconstructed', action='store_true',
+                    help='for ES-imagenet dataset')
 
 parser.add_argument('--DVS-DA', action='store_true',
                     help='use DA on DVS')
@@ -344,15 +326,9 @@ parser.add_argument('--DVS-DA', action='store_true',
 # train data used ratio
 parser.add_argument('--traindata-ratio', default=1.0, type=float,
                     help='training data ratio')
-
-# snr value
-parser.add_argument('--snr', default=0, type=int,
-                    help='random noise amplitude controled by snr, 0 means no noise')
-
-
-parser.add_argument('--domain-loss-after', action='store_true',
-                    help='domain loss after')
-
+# do not use hsv
+parser.add_argument('--no-hsv', action='store_true',
+                    help='do not use hsv')
 
 try:
     from apex import amp
@@ -393,6 +369,7 @@ def main():
     os.environ["OMP_NUM_THREADS"] = "20"  # 设置OpenMP计算库的线程数
     os.environ["MKL_NUM_THREADS"] = "20"  # 设置MKL-DNN CPU加速库的线程数。
     args, args_text = _parse_args()
+    # args.no_spike_output = args.no_spike_output | args.cut_mix
     args.no_spike_output = True
     output_dir = ''
     if args.local_rank == 0:
@@ -401,19 +378,13 @@ def main():
             args.model,
             args.target_dataset,
             str(args.step),
-            "bs_{}".format(args.batch_size),
             "seed_{}".format(args.seed),
+            "bs_{}".format(args.batch_size),
             "DA_{}".format(args.DVS_DA),
             "ls_{}".format(args.smoothing),
-            "SNR_{}".format(args.snr),
-            "domainLoss_{}".format(args.domain_loss),
-            "semanticLoss_{}".format(args.semantic_loss),
-            "domain_loss_coefficient{}".format(args.domain_loss_coefficient),
-            "semantic_loss_coefficient{}".format(args.semantic_loss_coefficient),
             "traindataratio_{}".format(args.traindata_ratio),
-            "lossafter_{}".format(args.domain_loss_after)
         ])
-        output_dir = get_outdir(output_base, 'train_TCKA_test', exp_name)
+        output_dir = get_outdir(output_base, 'Combined_Train', exp_name)
         args.output_dir = output_dir
         setup_default_logging(log_path=os.path.join(output_dir, 'log.txt'))
 
@@ -470,6 +441,7 @@ def main():
         temporal_flatten=args.temporal_flatten,
         layer_by_layer=args.layer_by_layer,
         n_groups=args.n_groups,
+        reconstruct=args.reconstructed
     )
 
     if 'dvs' in args.target_dataset:
@@ -489,7 +461,6 @@ def main():
     if args.local_rank == 0:
         _logger.info('Model %s created, param count: %d' %
                      (args.model, sum([m.numel() for m in model.parameters()])))
-
 
     num_aug_splits = 0
     if args.aug_splits > 0:
@@ -551,11 +522,15 @@ def main():
         args.eval_checkpoint = args.resume
     if args.resume:
         args.eval = True
+        # checkpoint = torch.load(args.resume, map_location='cpu')
+        # model.load_state_dict(checkpoint['state_dict'], False)
         resume_epoch = resume_checkpoint(
             model, args.resume,
             optimizer=None if args.no_resume_opt else optimizer,
             loss_scaler=None if args.no_resume_opt else loss_scaler,
             log_info=args.local_rank == 0)
+        # print(model.get_attr('mu'))
+        # print(model.get_attr('sigma'))
 
     if args.critical_loss or args.spike_rate:
         model.set_requires_fp(True)
@@ -617,35 +592,10 @@ def main():
 
     # now config only for imnet
     data_config = resolve_data_config(vars(args), model=model, verbose=False)
-    source_loader_train, _, _, _ = eval('get_transfer_%s_data' % args.source_dataset)(
+    loader_train, loader_eval, mixup_active, mixup_fn = eval('get_%s_data' % args.target_dataset)(
         batch_size=args.batch_size,
         step=args.step,
-        args=args,
-        _logge=_logger,
-        data_config=data_config,
-        num_aug_splits=num_aug_splits,
-        size=args.event_size,
-        mix_up=args.mix_up,
-        cut_mix=args.cut_mix,
-        event_mix=args.event_mix,
-        beta=args.cutmix_beta,
-        prob=args.cutmix_prob,
-        gaussian_n=args.gaussian_n,
-        num=args.cutmix_num,
-        noise=args.cutmix_noise,
-        num_classes=args.num_classes,
-        rand_aug=args.rand_aug,
-        randaug_n=args.randaug_n,
-        randaug_m=args.randaug_m,
-        portion=args.train_portion,
-        _logger=_logger,
-    )
-
-
-    target_loader_train, target_loader_eval, mixup_active, mixup_fn = eval('get_%s_data' % args.target_dataset)(
-        batch_size=args.batch_size,
         dvs_da=args.DVS_DA,
-        step=args.step,
         args=args,
         _logge=_logger,
         data_config=data_config,
@@ -664,10 +614,40 @@ def main():
         randaug_n=args.randaug_n,
         randaug_m=args.randaug_m,
         portion=args.train_portion,
+        reconstruct=args.reconstructed,
         _logger=_logger,
         train_data_ratio=args.traindata_ratio,
-        snr=args.snr,
     )
+
+    # 在这里对loader_train进行扩充，加入了rgb的
+    source_loader_train, source_loader_eval, mixup_active, mixup_fn = eval('get_combined_%s_data' % args.source_dataset)(
+        batch_size=args.batch_size,
+        step=args.step,
+        dvs_da=args.DVS_DA,
+        args=args,
+        _logge=_logger,
+        data_config=data_config,
+        num_aug_splits=num_aug_splits,
+        size=args.event_size,
+        mix_up=args.mix_up,
+        cut_mix=args.cut_mix,
+        event_mix=args.event_mix,
+        beta=args.cutmix_beta,
+        prob=args.cutmix_prob,
+        gaussian_n=args.gaussian_n,
+        num=args.cutmix_num,
+        noise=args.cutmix_noise,
+        num_classes=args.num_classes,
+        rand_aug=args.rand_aug,
+        randaug_n=args.randaug_n,
+        randaug_m=args.randaug_m,
+        portion=args.train_portion,
+        reconstruct=args.reconstructed,
+        _logger=_logger,
+        train_data_ratio=args.traindata_ratio,
+        no_use_hsv=args.no_hsv
+    )
+
 
     if args.loss_fn == 'mse':
         train_loss_fn = UnilateralMse(1.)
@@ -687,7 +667,6 @@ def main():
 
         validate_loss_fn = nn.CrossEntropyLoss().cuda()
 
-
     if args.loss_fn == 'mix':
         train_loss_fn = MixLoss(train_loss_fn)
         validate_loss_fn = MixLoss(validate_loss_fn)
@@ -695,7 +674,6 @@ def main():
     eval_metric = args.eval_metric
     best_metric = None
     best_epoch = None
-
 
     if args.eval:  # evaluate the model
         if args.distributed:
@@ -710,7 +688,7 @@ def main():
         else:
             model.load_state_dict(torch.load(args.eval_checkpoint)['state_dict'])
         for i in range(1):
-            val_metrics = validate(start_epoch, model, target_loader_eval, validate_loss_fn, args,
+            val_metrics = validate(start_epoch, model, loader_eval, validate_loss_fn, args,
                                    visualize=args.visualize, spike_rate=args.spike_rate,
                                    tsne=args.tsne, conf_mat=args.conf_mat)
             print(f"Top-1 accuracy of the model is: {val_metrics['top1']:.1f}%")
@@ -725,7 +703,6 @@ def main():
         with open(os.path.join(output_dir, 'args.yaml'), 'w') as f:
             f.write(args_text)
 
-    eval_top1 = 0.0
     try:  # train the model
         if args.reset_drop:
             model_without_ddp.reset_drop_path(0.0)
@@ -734,9 +711,10 @@ def main():
                 model_without_ddp.reset_drop_path(args.drop_path)
 
             if args.distributed:
-                target_loader_train.sampler.set_epoch(epoch)
+                loader_train.sampler.set_epoch(epoch)
+
             train_metrics = train_epoch(
-                epoch, model, source_loader_train, target_loader_train, optimizer, train_loss_fn, args,
+                epoch, model, loader_train, source_loader_train, optimizer, train_loss_fn, args,
                 lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
                 amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn)
 
@@ -745,20 +723,18 @@ def main():
                     _logger.info("Distributing BatchNorm running means and vars")
                 distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
-            eval_metrics = validate(epoch, model, target_loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast,
+            eval_metrics = validate(epoch, model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast,
                                     visualize=args.visualize, spike_rate=args.spike_rate,
                                     tsne=args.tsne, conf_mat=args.conf_mat)
-            eval_top1 = eval_metrics["top1"]
 
             if model_ema is not None and not args.model_ema_force_cpu:
                 if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
                     distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
-
-                    ema_eval_metrics = validate(
-                        epoch, model_ema.ema, target_loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)',
-                        visualize=args.visualize, spike_rate=args.spike_rate,
-                        tsne=args.tsne, conf_mat=args.conf_mat)
-                    eval_metrics = ema_eval_metrics
+                ema_eval_metrics = validate(
+                    epoch, model_ema.ema, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)',
+                    visualize=args.visualize, spike_rate=args.spike_rate,
+                    tsne=args.tsne, conf_mat=args.conf_mat)
+                eval_metrics = ema_eval_metrics
 
             if lr_scheduler is not None:
                 # step LR for next epoch
@@ -781,12 +757,12 @@ def main():
 
 
 def train_epoch(
-        epoch, model, source_loader, target_loader, optimizer, loss_fn, args,
+        epoch, model, loader, source_loader, optimizer, loss_fn, args,
         lr_scheduler=None, saver=None, output_dir='', amp_autocast=suppress,
         loss_scaler=None, model_ema=None, mixup_fn=None):
     if args.mixup_off_epoch and epoch >= args.mixup_off_epoch:
-        if args.prefetcher and target_loader.mixup_enabled:
-            target_loader.mixup_enabled = False
+        if args.prefetcher and loader.mixup_enabled:
+            loader.mixup_enabled = False
         elif mixup_fn is not None:
             mixup_fn.mixup_enabled = False
 
@@ -794,203 +770,54 @@ def train_epoch(
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     losses_m = AverageMeter()
-    domain_losses_m = AverageMeter()
-    semantic_losses_m = AverageMeter()
-    rgb_losses_m = AverageMeter()
-    dvs_losses_m = AverageMeter()
     closses_m = AverageMeter()
     top1_m = AverageMeter()
     top5_m = AverageMeter()
 
     model.train()
 
+    # t, k = adjust_surrogate_coeff(100, args.epochs)
+    # model.set_attr('t', t)
+    # model.set_attr('k', k)
+
     end = time.time()
-    last_idx = len(target_loader) - 1
-    num_updates = epoch * len(target_loader)
-    convertor = RGB_HSV()
-
-    batch_len = len(target_loader)
-    if args.target_dataset == "dvsc10":
-        set_MaxReplacement_epoch = 0.5 * args.epochs
-    else:
-        set_MaxReplacement_epoch = 0.5 * args.epochs
-    P_Replacement = 0.0
-    source_input_list, source_label_list = [], []
-
-    if args.target_dataset == "dvsc10" or args.target_dataset == "NCALTECH101":  # ImageNet中回来的loader其实是数据集,在后面处理
-        source_input_list, source_label_list = next(iter(source_loader))
-
-    if args.source_dataset == "CALTECH101":
-        cls_count = [438, 435, 200, 791, 49, 800, 41, 34, 45, 50, 45, 32, 128, 84, 38, 81, 86, 47, 40, 0, 45, 58, 61,
-                     105, 47, 64, 70, 68, 50, 51, 54, 67, 51, 64, 65, 72, 62, 52, 60, 83, 65, 67, 45, 31, 34, 49, 99,
-                     100, 42, 54, 86, 80, 30, 62, 86, 110, 61, 79, 77, 40, 65, 42, 35, 77, 31, 74, 49, 32, 39, 47, 35,
-                     43, 52, 34, 54, 69, 58, 45, 38, 57, 34, 84, 57, 31, 54, 45, 82, 56, 63, 35, 85, 43, 82, 74, 239,
-                     37, 53, 33, 55, 29, 42]
-        CALTECH101_list = [0] * 102  # 多开了一类, 方便计算
-        for i in range(1, len(cls_count) + 1):
-            CALTECH101_list[i] = CALTECH101_list[i - 1] + cls_count[i - 1]
-    if args.source_dataset == "imnet":
-        cls_count = [1300] * 1000  # 1000类
-        cls_count_idx = [1117, 1266, 1071, 1141, 1272, 1150, 772, 860, 1136, 732, 1025, 754, 1290, 738, 1258, 1273, 977,
-                     936, 1156, 1218, 969, 954, 1070, 755, 1206, 1165, 969, 1292, 1236, 1199, 1209, 1176, 1186, 1194,
-                     1067, 1029, 1154, 1216, 1187, 889, 1211, 1136, 1153, 1222, 1282, 1283, 980, 1034, 891, 1285, 986,
-                     1137, 1272, 1155, 1097, 1149, 1155, 1159, 1133, 1180, 1120, 1005, 1152, 1156, 962, 1157, 1282,
-                     1117, 1118, 1270, 1069, 1053, 1254, 908, 1247, 1253, 1029, 1259, 1267, 1249, 1162, 1045, 1004,
-                     1238, 1153, 1084, 1217, 931, 1264, 976, 1250, 1053, 1160, 1062, 1137, 1299, 1055, 1213, 1206, 1154,
-                     1207, 1149, 1239, 1125, 1193]
-        cls_idx = [43, 51, 62, 98, 103, 147, 152, 158, 164, 165, 166, 167, 168, 175, 181, 183, 188, 190, 194, 206, 221,
-                   252, 262, 268, 335, 390, 392, 409, 418, 426, 439, 465, 481, 491, 499, 501, 503, 507, 521, 531, 536,
-                   550, 551, 567, 577, 583, 585, 590, 596, 610, 623, 630, 631, 635, 653, 662, 663, 675, 676, 678, 686,
-                   689, 706, 708, 712, 714, 722, 723, 724, 727, 728, 729, 731, 740, 747, 753, 771, 772, 782, 789, 798,
-                   810, 811, 812, 821, 826, 838, 841, 854, 857, 860, 869, 872, 885, 891, 892, 901, 906, 914, 921, 925,
-                   926, 940, 946, 969]
-        for i in range(len(cls_count)):
-            if i in cls_idx:
-                cls_count[i] = cls_count_idx[cls_idx.index(i)]
-        ImageNet_list = [0] * 1001  # 多开了一类, 方便计算
-        for i in range(1, 1000 + 1):
-            ImageNet_list[i] = ImageNet_list[i - 1] + cls_count[i - 1]
-
-    for batch_idx, (inputs, label) in enumerate(target_loader):
-        P_Replacement = ((batch_idx + epoch * batch_len) / (set_MaxReplacement_epoch * batch_len)) ** 3
-        P_Replacement = P_Replacement if P_Replacement <= 1.0 else 1.0
-        sampler_list = label.tolist()
-        if args.target_dataset == "dvsc10":
-            sampler_list = torch.tensor(sampler_list) * 6000 + torch.randint(0, 6000, (len(sampler_list),))
-        elif args.target_dataset == "NCALTECH101":
-            tmp_sampler_list = []
-            idx_list = []
-            for idx, label_sampler in enumerate(sampler_list):
-                if label_sampler == 19:
-                    tmp_sampler_list.append(0)
-                    idx_list.append(idx)
-                else:
-                    tmp_sampler_list.append(torch.randint(CALTECH101_list[label_sampler],
-                                                          CALTECH101_list[label_sampler + 1], (1,)).item())
-        elif args.target_dataset == "esimnet":
-            tmp_sampler_list = []
-            for idx, label_sampler in enumerate(sampler_list):  # 这里的label_sampler是一个列表
-                tmp_sampler_list.append(torch.randint(ImageNet_list[label_sampler],
-                                                      ImageNet_list[label_sampler + 1], (1,)).item())
-
-        source_input, source_label = [], []
-        if args.target_dataset == "dvsc10":
-            source_input, source_label = source_input_list[sampler_list], source_label_list[sampler_list]
-        if args.target_dataset == "NCALTECH101":
-            source_input, source_label = source_input_list[tmp_sampler_list], source_label_list[tmp_sampler_list]
-        if args.target_dataset == "esimnet":
-            train_dataset = source_loader  # 给传回来的重新命个名儿
-            source_loader_used = torch.utils.data.DataLoader(
-                train_dataset,
-                batch_size=args.batch_size, shuffle=False,
-                num_workers=8, pin_memory=True, sampler=TransferSampler(tmp_sampler_list))
-            source_input, source_label = next(iter(source_loader_used))
-        # for i in range(10):
-        #     # vis origin picture
-        #     plt.figure()
-        #     plt.imshow(source_input[i].permute(1, 2, 0))
-        #     plt.title("origin image")
-        #     plt.show()
-
-        # # vis HSV picture
-        # plt.figure()
-        # plt.imshow(convertor.rgb_to_hsv(inputs)[7, :, :, :].permute(1, 2, 0).numpy())
-        # plt.title("HSV image")
-        # plt.show()
-
-        # source_input = convertor.rgb_to_hsv(source_input)[:, -1, :, :].unsqueeze(1).repeat(1, args.step * 2, 1, 1)
-        source_input = source_input[:, -1, :, :].unsqueeze(1).repeat(1, args.step * 2, 1, 1)
-        source_input = rearrange(source_input, 'b (t c) h w -> b t c h w', t=args.step)
-
-        if args.domain_loss_after:
-            pass
-        else:
-            for b in range(source_input.shape[0]):
-                if rd.uniform(0, 1) <= P_Replacement:
-                    source_input[b] = inputs[b, :, :, :, :]
-
-        # for i in range(10):
-        #     # vis HSV picture for v channel
-        #     plt.figure()
-        #     plt.imshow(source_input[i][0].permute(1, 2, 0)[:, :, -1].unsqueeze(2))
-        #     plt.title("HSV image for v channel")
-        #     plt.show()
-
-        if args.target_dataset == "NCALTECH101" and len(idx_list) > 0:
-            for i in range(len(idx_list)):
-                source_input[idx_list[i]] = inputs[idx_list[i]]
+    last_idx = len(loader) - 1
+    num_updates = epoch * len(loader)
+    for batch_idx, (inputs, target) in enumerate(zip(loader, source_loader)):  # 这里要加入source_loader, 如果加上cycle会有很大的提升
+        # 维度变换
+        target[0] = target[0][:, -1, :, :].unsqueeze(1).repeat(1, args.step * 2, 1, 1)
+        target[0] = rearrange(target[0], 'b (t c) h w -> b t c h w', t=args.step)
+        # 重新组织
+        inputs_use = [inputs[0], target[0]]
+        target_use = [inputs[1], target[1]]
+        select_list = torch.randint(low=0, high=2, size=(args.batch_size,))
+        inputs_list = []
+        labels_list = []
+        for idx, i in enumerate(select_list):  # 每个idx选择0还是1
+            inputs_list.append(inputs_use[i][idx])
+            labels_list.append(target_use[i][idx])
+        inputs = torch.stack(inputs_list)
+        target = torch.stack(labels_list)
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
         if not args.prefetcher or args.target_dataset != 'imnet':
-            inputs, label = inputs.type(torch.FloatTensor).cuda(), label.cuda()
-            source_input, source_label = source_input.type(torch.FloatTensor).cuda(), label.cuda()
+            inputs, target = inputs.type(torch.FloatTensor).cuda(), target.cuda()
             if mixup_fn is not None:
-                inputs, label = mixup_fn(inputs, label)
-                source_input, source_label = mixup_fn(source_input, source_label)
+                inputs, target = mixup_fn(inputs, target)
         if args.channels_last:
             inputs = inputs.contiguous(memory_format=torch.channels_last)
-            source_input = source_input.contiguous(memory_format=torch.channels_last)
         with amp_autocast():
-            domain_rbg_list, domain_dvs_list, output_rgb, output_dvs = model(source_input, inputs)
-
-            # compute semantic loss
-            label_idx = [[] for i in range(args.num_classes)]
-            semantic_label_list = []
-            for idx, i in enumerate(label):
-                label_idx[i.item()].append(idx)
-            for i in label:
-                while True:
-                    label_tmp = torch.randint(0, args.num_classes, (1,)).item()
-                    if i.item() != label_tmp and len(label_idx[label_tmp]) > 0:  # NCALTECH101有空列表, 需要判断
-                        break
-                semantic_label_list.append(int(np.random.choice(label_idx[label_tmp], 1)))
-            semantic_rbg_list = []
-            semantic_loss = 0.
-            for i in range(len(domain_rbg_list)):
-                semantic_rbg_list.append(domain_rbg_list[i][semantic_label_list])
-            for i in range(len(domain_rbg_list)):
-                semantic_loss += torch.abs(CKA.linear_CKA(domain_dvs_list[i].view(args.batch_size, -1), semantic_rbg_list[i].view(args.batch_size, -1)))
-            semantic_loss /= len(domain_rbg_list)
-            if args.target_dataset == "dvsc10":
-                m = 0.1
-            else:
-                m = 0.3
-            if semantic_loss.item() - m < 0:
-                semantic_loss = torch.tensor(0., device=semantic_loss.device)
-
-            if args.domain_loss_after:
-                # compute domain loss
-                for b in range(source_input.shape[0]):
-                    if rd.uniform(0, 1) <= P_Replacement:
-                        for i in range(len(domain_rbg_list)):
-                            domain_rbg_list[i][b] = domain_dvs_list[i][b, :, :, :]
-
-            domain_loss = 0.
-            for i in range(len(domain_rbg_list)):
-                domain_loss += 1 - torch.abs(CKA.linear_CKA(domain_rbg_list[i].view(args.batch_size, -1), domain_dvs_list[i].view(args.batch_size, -1)))
-            domain_loss /= len(domain_rbg_list)
-            # compute cls loss
-            output_rgb = sum(output_rgb) / len(output_rgb)
-            output_dvs = sum(output_dvs) / len(output_dvs)
-            loss_rgb = loss_fn(output_rgb, label)
-            loss_dvs = loss_fn(output_dvs, label)
-
-            loss = loss_rgb + loss_dvs
-            if args.domain_loss:
-                loss += args.domain_loss_coefficient * domain_loss
-            if args.semantic_loss and epoch <= set_MaxReplacement_epoch:
-                if args.target_dataset == "NCALTECH101" and epoch <= set_MaxReplacement_epoch * 0.5:
-                    # loss += args.semantic_loss_coefficient * semantic_loss * math.pow(10, -1.0 * float(set_MaxReplacement_epoch / (epoch+1)))
-                    pass
-                else:
-                    loss += args.semantic_loss_coefficient * semantic_loss
-
+            output = model(inputs)
+            loss = loss_fn(output, target)
         if not (args.cut_mix | args.mix_up | args.event_mix) and args.target_dataset != 'imnet':
-            acc1, acc5 = accuracy(output_dvs, label, topk=(1, 5))
+            # print(output.shape, target.shape)
+            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            # acc1, = accuracy(output, target)
         else:
             acc1, acc5 = torch.tensor([0.]), torch.tensor([0.])
 
         closs = torch.tensor([0.], device=loss.device)
+
 
         loss = loss + .1 * closs
 
@@ -998,10 +825,6 @@ def train_epoch(
         threshold_str = ''
         if not args.distributed:
             losses_m.update(loss.item(), inputs.size(0))
-            domain_losses_m.update(domain_loss.item(), inputs.size(0))
-            semantic_losses_m.update(semantic_loss.item(), inputs.size(0))
-            rgb_losses_m.update(loss_rgb.item(), inputs.size(0))
-            dvs_losses_m.update(loss_dvs.item(), inputs.size(0))
             top1_m.update(acc1.item(), inputs.size(0))
             top5_m.update(acc5.item(), inputs.size(0))
             closses_m.update(closs.item(), inputs.size(0))
@@ -1009,7 +832,7 @@ def train_epoch(
             spike_rate_avg_layer = model.get_fire_rate().tolist()
             spike_rate_avg_layer_str = ['{:.3f}'.format(i) for i in spike_rate_avg_layer]
             threshold = model.get_threshold()
-            threshold_str = ['{:.3f}'.format(i.item()) for i in threshold]
+            threshold_str = ['{:.3f}'.format(i) for i in threshold]
 
         optimizer.zero_grad()
         if loss_scaler is not None:
@@ -1062,7 +885,7 @@ def train_epoch(
                         'LR: {lr:.3e}  '
                         'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
                             epoch,
-                            batch_idx, len(target_loader),
+                            batch_idx, len(loader),
                             100. * batch_idx / last_idx,
                             loss=losses_m,
                             closs=closses_m,
@@ -1088,10 +911,9 @@ def train_epoch(
                         'Fire_rate: {spike_rate}\n'
                         'Thres: {threshold}\n'
                         'Mu: {mu_str}\n'
-                        'Sigma: {sigma_str}\n'
-                        'P_Replacement: {P_Replacement}\n'.format(
+                        'Sigma: {sigma_str}\n'.format(
                             epoch,
-                            batch_idx, len(target_loader),
+                            batch_idx, len(loader),
                             100. * batch_idx / last_idx,
                             loss=losses_m,
                             closs=closses_m,
@@ -1105,8 +927,7 @@ def train_epoch(
                             spike_rate=spike_rate_avg_layer_str,
                             threshold=threshold_str,
                             mu_str=mu_str,
-                            sigma_str=sigma_str,
-                            P_Replacement=P_Replacement,
+                            sigma_str=sigma_str
                         ))
 
                 if args.save_images and output_dir:
@@ -1129,8 +950,8 @@ def train_epoch(
     if hasattr(optimizer, 'sync_lookahead'):
         optimizer.sync_lookahead()
 
-    return OrderedDict([('loss', losses_m.avg), ('domainLoss', domain_losses_m.avg), ('semanticLoss', semantic_losses_m.avg),
-                        ('rgbLoss', rgb_losses_m.avg), ('dvsLoss', dvs_losses_m.avg)])
+    return OrderedDict([('loss', losses_m.avg)])
+
 
 def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
              log_suffix='', visualize=False, spike_rate=False, tsne=False, conf_mat=False):
@@ -1166,8 +987,7 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
                     #     model.set_requires_fp(False)
 
             with amp_autocast():
-                _, _, output_rbg, output_dvs = model(inputs, inputs)
-                output = sum(output_dvs) / len(output_dvs)
+                output = model(inputs)
             if isinstance(output, (tuple, list)):
                 output = output[0]
 

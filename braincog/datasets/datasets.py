@@ -113,7 +113,7 @@ def unpack_mix_param(args):
     return mix_up, cut_mix, event_mix, beta, prob, num, num_classes, noise, gaussian_n
 
 
-def build_transform(is_train, img_size, Gradient):
+def build_transform(is_train, img_size, use_hsv=True):
     """
     构建数据增强, 适用于static data
     :param is_train: 是否训练集
@@ -156,14 +156,15 @@ def build_transform(is_train, img_size, Gradient):
         # t.append(ConvertHSV())
         # t.append(AddGaussianNoise())
     t.append(transforms.Resize((img_size, img_size), interpolation=InterpolationMode.BILINEAR))
-    print("Used V-channel!")
-    t.append(ConvertHSV())
+    if use_hsv:
+        print("Used V-channel!")
+        t.append(ConvertHSV())
     t.append(transforms.ToTensor())
     # t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
     return transforms.Compose(t)
 
 
-def build_dataset(is_train, img_size, dataset, path, same_da=False, Gradient=False):
+def build_dataset(is_train, img_size, dataset, path, same_da=False, use_hsv=True):
     """
     构建带有增强策略的数据集
     :param is_train: 是否训练集
@@ -171,11 +172,11 @@ def build_dataset(is_train, img_size, dataset, path, same_da=False, Gradient=Fal
     :param dataset: 数据集名称
     :param path: 数据集路径
     :param same_da: 为训练集使用测试集的增广方法
-    : param Gradient: 是否采用HSV的梯度
+    : param use_hsv: 是否采用HSV
     :return: 增强后的数据集
     """
     # transform = build_transform(False, img_size) if same_da else build_transform(is_train, img_size)
-    transform = build_transform(False, img_size, Gradient) if same_da else build_transform(False, img_size, Gradient)
+    transform = build_transform(False, img_size, use_hsv) if same_da else build_transform(False, img_size, use_hsv)
     if dataset == 'CIFAR10':
         dataset = datasets.CIFAR10(
             path, train=is_train, transform=transform, download=True)
@@ -370,9 +371,9 @@ def get_cifar100_data(batch_size, num_workers=8, same_data=False, *args, **kwarg
 
 
 def get_transfer_cifar10_data(batch_size, num_workers=8, same_da=False, **kwargs):
-    Gradient = kwargs['Gradient'] if 'Gradient' in kwargs else False
-    train_datasets, _ = build_dataset(True, 48, 'CIFAR10', DATA_DIR, same_da, Gradient)
-    test_datasets, _ = build_dataset(False, 48, 'CIFAR10', DATA_DIR, same_da, Gradient)
+    use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
+    train_datasets, _ = build_dataset(True, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
+    test_datasets, _ = build_dataset(False, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
 
     concat_dataset = ConcatDataset([train_datasets, test_datasets])  # concat dataset
 
@@ -394,6 +395,20 @@ def get_transfer_cifar10_data(batch_size, num_workers=8, same_da=False, **kwargs
     return source_loader, None, None, None
 
 
+def get_combined_cifar10_data(batch_size, num_workers=8, same_da=False, **kwargs):
+    use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
+    train_datasets, _ = build_dataset(True, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
+    test_datasets, _ = build_dataset(False, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
+
+    concat_dataset = ConcatDataset([train_datasets, test_datasets])  # concat dataset
+
+    source_loader = torch.utils.data.DataLoader(
+        concat_dataset, batch_size=batch_size,
+        pin_memory=True, drop_last=False, num_workers=8, shuffle=True
+    )
+    return source_loader, None, None, None
+
+
 def get_transfer_CALTECH101_data(batch_size, num_workers=8, same_da=False, **kwargs):
     """
     获取NCaltech101数据
@@ -403,13 +418,36 @@ def get_transfer_CALTECH101_data(batch_size, num_workers=8, same_da=False, **kwa
     :param kwargs:
     :return: (train loader, test loader, mixup_active, mixup_fn)
     """
-    datasets, _ = build_dataset(False, 48, 'CALTECH101', DATA_DIR, same_da)
+    use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
+    datasets, _ = build_dataset(False, 48, 'CALTECH101', DATA_DIR, same_da, use_hsv)
     dataset_length = 8299
 
     train_loader = torch.utils.data.DataLoader(
         datasets, batch_size=10000,
         sampler=TransferSampler(torch.arange(0, dataset_length).tolist()),
-        pin_memory=True, drop_last=False, num_workers=0
+        pin_memory=True, drop_last=False, num_workers=4
+    )
+
+    return train_loader, None, None, None
+
+
+def get_combined_CALTECH101_data(batch_size, num_workers=8, same_da=False, **kwargs):
+    """
+    获取NCaltech101数据
+    http://journal.frontiersin.org/Article/10.3389/fnins.2015.00437/abstract
+    :param batch_size: batch size
+    :param step: 仿真步长
+    :param kwargs:
+    :return: (train loader, test loader, mixup_active, mixup_fn)
+    """
+    use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
+    datasets, _ = build_dataset(False, 48, 'CALTECH101', DATA_DIR, same_da, use_hsv)
+    dataset_length = 8299
+
+    train_loader = torch.utils.data.DataLoader(
+        datasets, batch_size=batch_size,
+        pin_memory=True, drop_last=False,
+        num_workers=4, shuffle=True
     )
 
     return train_loader, None, None, None
@@ -448,94 +486,43 @@ def get_TinyImageNet_data(batch_size, num_workers=8, same_da=False, *args, **kwa
     return train_loader, test_loader, False, None
 
 
-def get_imnet_data(args, _logger, data_config, num_aug_splits, **kwargs):
-    """
-    获取ImageNet数据集
-    http://arxiv.org/abs/1409.0575
-    :param args: 其他的参数
-    :param _logger: 日志路径
-    :param data_config: 增强策略
-    :param num_aug_splits: 不同增强策略的数量
-    :param kwargs:
-    :return: (train loader, test loader, mixup_active, mixup_fn)
-    """
-    train_dir = os.path.join(DATA_DIR, 'ILSVRC2012/train')
-    if not os.path.exists(train_dir):
-        _logger.error(
-            'Training folder does not exist at: {}'.format(train_dir))
-        exit(1)
-    dataset_train = ImageDataset(train_dir)
-    # collate_fn = None
-    # mixup_fn = None
-    # mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
-    # if mixup_active:
-    #     mixup_args = dict(
-    #         mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
-    #         prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
-    #         label_smoothing=args.smoothing, num_classes=args.num_classes)
-    #     if args.prefetcher:
-    #         # collate conflict (need to support deinterleaving in collate mixup)
-    #         assert not num_aug_splits
-    #         collate_fn = FastCollateMixup(**mixup_args)
-    #     else:
-    #         mixup_fn = Mixup(**mixup_args)
+def get_transfer_imnet_data(args, _logger, data_config, num_aug_splits, **kwargs):
+    '''
+    load imagenet 2012
+    we use images in train/ for training, and use images in val/ for testing
+    https://github.com/pytorch/examples/tree/master/imagenet
+    '''
+    IMAGENET_PATH = '/data/datasets/ILSVRC2012/'
+    traindir = os.path.join(IMAGENET_PATH, 'train')
+    valdir = os.path.join(IMAGENET_PATH, 'val')
+    batch_size = kwargs['batch_size']
 
-    # if num_aug_splits > 1:
-    #     dataset_train = AugMixDataset(dataset_train, num_splits=num_aug_splits)
+    train_dataset = datasets.ImageFolder(
+        traindir,
+        transforms.Compose([
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            ConvertHSV(),
+            transforms.ToTensor()]))
 
-    train_interpolation = args.train_interpolation
-    if args.no_aug or not train_interpolation:
-        train_interpolation = data_config['interpolation']
-    loader_train = create_loader(
-        dataset_train,
-        input_size=data_config['input_size'],
-        batch_size=args.batch_size,
-        is_training=True,
-        use_prefetcher=args.prefetcher,
-        no_aug=args.no_aug,
-        # re_prob=args.reprob,
-        # re_mode=args.remode,
-        # re_count=args.recount,
-        # re_split=args.resplit,
-        scale=args.scale,
-        ratio=args.ratio,
-        hflip=args.hflip,
-        # vflip=arg,
-        color_jitter=args.color_jitter,
-        #auto_augment=args.aa,
-        num_aug_splits=num_aug_splits,
-        interpolation=train_interpolation,
-        mean=data_config['mean'],
-        std=data_config['std'],
-        num_workers=args.workers,
-        distributed=args.distributed,
-        #collate_fn=collate_fn,
-        pin_memory=args.pin_mem,
-        use_multi_epochs_loader=args.use_multi_epochs_loader)
-    eval_dir = os.path.join(DATA_DIR, 'ILSVRC2012/val')
-    if not os.path.isdir(eval_dir):
-        eval_dir = os.path.join(DATA_DIR, 'ILSVRC2012/validation')
-        if not os.path.isdir(eval_dir):
-            _logger.error(
-                'Validation folder does not exist at: {}'.format(eval_dir))
-            exit(1)
-    dataset_eval = ImageDataset(eval_dir)
+    # val_dataset = datasets.ImageFolder(
+    #     valdir,
+    #     transforms.Compose([
+    #         transforms.Resize(256),
+    #         transforms.CenterCrop(224),
+    #         ConvertHSV(),
+    #         transforms.ToTensor()]))
 
-    loader_eval = create_loader(
-        dataset_eval,
-        input_size=data_config['input_size'],
-        batch_size=args.validation_batch_size_multiplier * args.batch_size,
-        is_training=False,
-        use_prefetcher=args.prefetcher,
-        interpolation=data_config['interpolation'],
-        mean=data_config['mean'],
-        std=data_config['std'],
-        num_workers=args.workers,
-        distributed=args.distributed,
-        crop_pct=data_config['crop_pct'],
-        pin_memory=args.pin_mem,
-    )
-    return loader_train, loader_eval, False, None
+    # train_loader = torch.utils.data.DataLoader(
+    #     train_dataset,
+    #     batch_size=batch_size, shuffle=False,
+    #     num_workers=4, pin_memory=True, sampler=TransferSampler([0, 1300, 2599, 2600]))
+    #
+    # val_loader = torch.utils.data.DataLoader(
+    #     val_dataset,
+    #     batch_size=batch_size, shuffle=False,
+    #     num_workers=4, pin_memory=True)
+    return train_dataset, None, None, None
 
 
 def get_dvsg_data(batch_size, step, **kwargs):
@@ -1128,14 +1115,26 @@ def get_esimnet_data(batch_size, step, **kwargs):
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=batch_size,
         pin_memory=True, drop_last=True, num_workers=8,
-        shuffle=False, sampler=train_sampler
+        sampler=train_sampler
     )
 
     test_loader = torch.utils.data.DataLoader(
         test_dataset, batch_size=batch_size,
-        pin_memory=True, drop_last=False, num_workers=1,
-        shuffle=False, sampler=test_sampler
+        pin_memory=True, drop_last=False, num_workers=8,
+        sampler=test_sampler
     )
+
+    # train_loader = torch.utils.data.DataLoader(
+    #     train_dataset, batch_size=batch_size,
+    #     pin_memory=True, drop_last=True, num_workers=8,
+    #     shuffle=True
+    # )
+    #
+    # test_loader = torch.utils.data.DataLoader(
+    #     test_dataset, batch_size=batch_size,
+    #     pin_memory=True, drop_last=False, num_workers=1,
+    #     shuffle=False
+    # )
 
     return train_loader, test_loader, mixup_active, None
 

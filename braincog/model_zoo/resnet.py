@@ -443,6 +443,292 @@ class ResNet(BaseModule):
             return sum(outputs) / len(outputs)
 
 
+class Transfer_ResNet(BaseModule):
+    """
+    ResNet-SNN
+    :param block: Block类型
+    :param layers: block 层数
+    :param inplanes: 输入通道数量
+    :param num_classes: 输出类别数
+    :param zero_init_residual: 是否使用零初始化
+    :param groups: 卷积分组
+    :param width_per_group: 每一组的宽度
+    :param replace_stride_with_dilation: 是否使用stride替换dilation
+    :param norm_layer: Norm 方式, 默认为 ``BatchNorm``
+    :param step: 仿真步长, 默认为 ``8``
+    :param encode_type: 编码方式, 默认为 ``direct``
+    :param spike_output: 是否使用脉冲输出, 默认为 ``False``
+    :param args:
+    :param kwargs:
+    """
+    def __init__(self,
+                 block,
+                 layers,
+                 inplanes=64,
+                 num_classes=10,
+                 zero_init_residual=False,
+                 groups=1,
+                 width_per_group=64,
+                 replace_stride_with_dilation=None,
+                 norm_layer=None,
+                 step=8,
+                 encode_type='direct',
+                 spike_output=False,
+                 *args,
+                 **kwargs):
+        super().__init__(
+            step,
+            encode_type,
+            *args,
+            **kwargs
+        )
+        self.spike_output = spike_output
+        self.num_classes = num_classes
+
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        self._norm_layer = norm_layer
+
+        # print('inplanes %d' % inplanes)
+        self.inplanes = inplanes
+        self.interplanes = [
+            self.inplanes, self.inplanes * 2, self.inplanes * 4,
+            self.inplanes * 8
+        ]
+        self.dilation = 1
+
+        self.node = kwargs['node_type']
+        if issubclass(self.node, BaseNode):
+            self.node = partial(self.node, **kwargs)
+
+        if replace_stride_with_dilation is None:
+            # each element in the tuple indicates if we should replace
+            # the 2x2 stride with a dilated convolution instead
+            replace_stride_with_dilation = [False, False, False]
+        if len(replace_stride_with_dilation) != 3:
+            raise ValueError('replace_stride_with_dilation should be None '
+                             'or a 3-element tuple, got {}'.format(
+                                 replace_stride_with_dilation))
+        self.groups = groups
+        self.base_width = width_per_group
+        self.static_data = False
+
+        self.dataset = kwargs['dataset']
+        if self.dataset == 'dvsg' or self.dataset == 'dvsc10' or self.dataset == 'NCALTECH101' or self.dataset == 'NCARS' or self.dataset == 'DVSG':
+            self.conv1 = nn.Conv2d(2 * self.init_channel_mul,
+                                   self.inplanes,
+                                   kernel_size=3,
+                                   padding=1,
+                                   bias=False)
+        elif self.dataset == 'imnet':
+            self.conv1 = nn.Conv2d(3 * self.init_channel_mul,
+                                   self.inplanes,
+                                   kernel_size=7,
+                                   stride=2,
+                                   padding=3,
+                                   bias=False)
+            self.static_data = True
+        elif self.dataset == 'esimnet':
+            reconstruct = kwargs["reconstruct"] if "reconstruct" in kwargs else False
+            print(reconstruct)
+            if reconstruct:
+                self.conv1 = nn.Conv2d(1 * self.init_channel_mul,
+                                       self.inplanes,
+                                       kernel_size=7,
+                                       stride=2,
+                                       padding=3,
+                                       bias=False)
+                self.static_data = True
+            else:
+                self.conv1 = nn.Conv2d(2 * self.init_channel_mul,
+                                       self.inplanes,
+                                       kernel_size=7,
+                                       stride=2,
+                                       padding=3,
+                                       bias=False)
+                self.static_data = True
+        elif self.dataset == 'cifar10' or self.dataset == 'cifar100':
+            self.conv1 = nn.Conv2d(3 * self.init_channel_mul,
+                                   self.inplanes,
+                                   kernel_size=3,
+                                   padding=1,
+                                   bias=False)
+            self.static_data = True
+
+        # self.relu = nn.ReLU(inplace=False)
+        self.layer1 = self._make_layer(
+            block, self.interplanes[0], layers[0], node=self.node)
+        self.layer2 = self._make_layer(block,
+                                       self.interplanes[1],
+                                       layers[1],
+                                       stride=2,
+                                       dilate=replace_stride_with_dilation[0], node=self.node)
+        self.layer3 = self._make_layer(block,
+                                       self.interplanes[2],
+                                       layers[2],
+                                       stride=2,
+                                       dilate=replace_stride_with_dilation[1], node=self.node)
+        self.layer4 = self._make_layer(block,
+                                       self.interplanes[3],
+                                       layers[3],
+                                       stride=2,
+                                       dilate=replace_stride_with_dilation[2], node=self.node)
+
+        self.bn1 = norm_layer(self.inplanes)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        if self.spike_output:
+            self.fc = nn.Linear(
+                self.interplanes[3] * block.expansion, num_classes * 10)
+            self.node2 = self.node()
+            self.vote = VotingLayer(10)
+        else:
+            self.fc = nn.Linear(
+                self.interplanes[3] * block.expansion, num_classes
+            )
+            self.node2 = nn.Identity()
+            self.vote = nn.Identity()
+        self.warm_up = False
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight,
+                                        mode='fan_out',
+                                        nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        # Zero-initialize the last BN in each residual branch,
+        # so that the residual branch starts with zeros, and each residual block behaves like an identity.
+        # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
+        if zero_init_residual:
+            for m in self.modules():
+                if isinstance(m, Bottleneck):
+                    nn.init.constant_(m.bn3.weight, 0)
+                elif isinstance(m, BasicBlock):
+                    nn.init.constant_(m.bn2.weight, 0)
+
+    def _make_layer(self, block, planes, blocks, stride=1, dilate=False, node=torch.nn.Identity):
+        norm_layer = self._norm_layer
+        downsample = None
+        previous_dilation = self.dilation
+        if dilate:
+            self.dilation *= stride
+            stride = 1
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            if block == BasicBlock:
+                downsample = nn.Sequential(
+                    norm_layer(self.inplanes),
+                    self.node(),
+                    conv1x1(self.inplanes, planes * block.expansion, stride),
+                )
+            elif block == Bottleneck:
+                downsample = nn.Sequential(
+                    norm_layer(self.inplanes),
+                    self.node(),
+                    conv1x1(self.inplanes, planes * block.expansion, stride),
+                )
+            else:
+                raise NotImplementedError
+
+        layers = [block(self.inplanes, planes, stride, downsample, self.groups,
+                        self.base_width, previous_dilation, norm_layer, node=node)]
+        self.inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(
+                block(self.inplanes,
+                      planes,
+                      groups=self.groups,
+                      base_width=self.base_width,
+                      dilation=self.dilation,
+                      norm_layer=norm_layer, node=node))
+
+        return nn.Sequential(*layers)
+
+    def forward(self, inputs_rgb, inputs_dvs):
+        inputs_rgb = self.encoder(inputs_rgb)
+        inputs_dvs = self.encoder(inputs_dvs)
+        self.reset()
+
+        if self.layer_by_layer:
+
+            x = self.conv1(inputs)
+            x = self.layer1(x)
+            x = self.layer2(x)
+            x = self.layer3(x)
+            x = self.layer4(x)
+
+            x = self.bn1(x)
+            # x = self.node1(x)
+            x = self.avgpool(x)
+
+            x = torch.flatten(x, 1)
+            # print(x.shape)
+            x = self.fc(x)
+            x = rearrange(x, '(t b) c -> t b c', t=self.step).mean(0)
+
+            return x
+
+        else:
+            outputs_rgb_feature, outputs_dvs_feature = [], []
+            outputs_rgb, outputs_dvs = [], []
+            if self.warm_up:
+                step = 1
+            else:
+                step = self.step
+
+            for t in range(step):
+                x = inputs_rgb[t]
+
+                x = self.conv1(x)
+
+                x = self.layer1(x)
+                x = self.layer2(x)
+                x = self.layer3(x)
+                x = self.layer4(x)
+
+                outputs_rgb_feature.append(x)
+
+                x = self.bn1(x)
+                # x = self.node1(x)
+                x = self.avgpool(x)
+
+                x = torch.flatten(x, 1)
+                x = self.fc(x)
+
+                x = self.node2(x)
+                x = self.vote(x)
+
+                outputs_rgb.append(x)
+
+            for t in range(step):
+                x = inputs_dvs[t]
+
+                x = self.conv1(x)
+
+                x = self.layer1(x)
+                x = self.layer2(x)
+                x = self.layer3(x)
+                x = self.layer4(x)
+
+                outputs_dvs_feature.append(x)
+
+                x = self.bn1(x)
+                # x = self.node1(x)
+                x = self.avgpool(x)
+
+                x = torch.flatten(x, 1)
+                x = self.fc(x)
+
+                x = self.node2(x)
+                x = self.vote(x)
+
+                outputs_dvs.append(x)
+
+            return outputs_rgb_feature, outputs_dvs_feature, outputs_rgb, outputs_dvs
+
+
 def _resnet(arch, block, layers, pretrained=False, **kwargs):
     model = ResNet(block, layers, **kwargs)
     # only load state_dict()
@@ -451,6 +737,14 @@ def _resnet(arch, block, layers, pretrained=False, **kwargs):
 
     return model
 
+
+def _transfer_resnet(arch, block, layers, pretrained=False, **kwargs):
+    model = Transfer_ResNet(block, layers, **kwargs)
+    # only load state_dict()
+    if pretrained:
+        raise NotImplementedError
+
+    return model
 
 @register_model
 def resnet9(pretrained=False, **kwargs):
@@ -462,6 +756,9 @@ def resnet18(pretrained=False, **kwargs):
     # kwargs['inplanes'] = 96
     return _resnet('resnet18', BasicBlock, [2, 2, 2, 2], pretrained, **kwargs)
 
+@register_model
+def Transfer_ResNet18(pretrained=False, **kwargs):
+    return _transfer_resnet('resnet18', BasicBlock, [2, 2, 2, 2], pretrained, **kwargs)
 
 @register_model
 def resnet34_half(pretrained=False, **kwargs):
