@@ -389,7 +389,10 @@ def _parse_args():
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
     return args, args_text
 
-
+from tqdm import tqdm
+total_count = 0
+from torch.utils.tensorboard import SummaryWriter
+writer = None
 def main():
     torch.set_num_threads(20)
     os.environ["OMP_NUM_THREADS"] = "20"  # 设置OpenMP计算库的线程数
@@ -418,7 +421,8 @@ def main():
         output_dir = get_outdir(output_base, 'train_TCKA_test', exp_name)
         args.output_dir = output_dir
         setup_default_logging(log_path=os.path.join(output_dir, 'log.txt'))
-
+        global writer
+        writer = SummaryWriter(output_dir)
     else:
         setup_default_logging()
 
@@ -671,51 +675,6 @@ def main():
         snr=args.snr,
     )
 
-    global source_input_list, source_label_list, CALTECH101_list, ImageNet_list
-    if args.target_dataset == "dvsc10" or args.target_dataset == "NCALTECH101":  # ImageNet中回来的loader其实是数据集,在后面处理
-        source_input_list, source_label_list = next(iter(source_loader_train))
-
-    if args.source_dataset == "CALTECH101":
-        cls_count = [438, 435, 200, 791, 49, 800, 41, 34, 45, 50, 45, 32, 128, 84, 38, 81, 86, 47, 40, 0, 45, 58, 61,
-                     105, 47, 64, 70, 68, 50, 51, 54, 67, 51, 64, 65, 72, 62, 52, 60, 83, 65, 67, 45, 31, 34, 49, 99,
-                     100, 42, 54, 86, 80, 30, 62, 86, 110, 61, 79, 77, 40, 65, 42, 35, 77, 31, 74, 49, 32, 39, 47, 35,
-                     43, 52, 34, 54, 69, 58, 45, 38, 57, 34, 84, 57, 31, 54, 45, 82, 56, 63, 35, 85, 43, 82, 74, 239,
-                     37, 53, 33, 55, 29, 42]
-        CALTECH101_list = [0] * 102  # 多开了一类, 方便计算
-        for i in range(1, len(cls_count) + 1):
-            CALTECH101_list[i] = CALTECH101_list[i - 1] + cls_count[i - 1]
-
-    if args.source_dataset == "NCALTECH101":
-        cls_count = tonic.datasets.NCALTECH101.cls_count
-        CALTECH101_list = [0] * 102  # 多开了一类, 方便计算
-        for i in range(1, len(cls_count) + 1):
-            CALTECH101_list[i] = CALTECH101_list[i - 1] + cls_count[i - 1]
-
-    if args.source_dataset == "imnet":
-        cls_count = [1300] * 1000  # 1000类
-        cls_count_idx = [1117, 1266, 1071, 1141, 1272, 1150, 772, 860, 1136, 732, 1025, 754, 1290, 738, 1258, 1273, 977,
-                         936, 1156, 1218, 969, 954, 1070, 755, 1206, 1165, 969, 1292, 1236, 1199, 1209, 1176, 1186,
-                         1194,
-                         1067, 1029, 1154, 1216, 1187, 889, 1211, 1136, 1153, 1222, 1282, 1283, 980, 1034, 891, 1285,
-                         986,
-                         1137, 1272, 1155, 1097, 1149, 1155, 1159, 1133, 1180, 1120, 1005, 1152, 1156, 962, 1157, 1282,
-                         1117, 1118, 1270, 1069, 1053, 1254, 908, 1247, 1253, 1029, 1259, 1267, 1249, 1162, 1045, 1004,
-                         1238, 1153, 1084, 1217, 931, 1264, 976, 1250, 1053, 1160, 1062, 1137, 1299, 1055, 1213, 1206,
-                         1154,
-                         1207, 1149, 1239, 1125, 1193]
-        cls_idx = [43, 51, 62, 98, 103, 147, 152, 158, 164, 165, 166, 167, 168, 175, 181, 183, 188, 190, 194, 206, 221,
-                   252, 262, 268, 335, 390, 392, 409, 418, 426, 439, 465, 481, 491, 499, 501, 503, 507, 521, 531, 536,
-                   550, 551, 567, 577, 583, 585, 590, 596, 610, 623, 630, 631, 635, 653, 662, 663, 675, 676, 678, 686,
-                   689, 706, 708, 712, 714, 722, 723, 724, 727, 728, 729, 731, 740, 747, 753, 771, 772, 782, 789, 798,
-                   810, 811, 812, 821, 826, 838, 841, 854, 857, 860, 869, 872, 885, 891, 892, 901, 906, 914, 921, 925,
-                   926, 940, 946, 969]
-        for i in range(len(cls_count)):
-            if i in cls_idx:
-                cls_count[i] = cls_count_idx[cls_idx.index(i)]
-        ImageNet_list = [0] * 1001  # 多开了一类, 方便计算
-        for i in range(1, 1000 + 1):
-            ImageNet_list[i] = ImageNet_list[i - 1] + cls_count[i - 1]
-
 
     if args.loss_fn == 'mse':
         train_loss_fn = UnilateralMse(1.)
@@ -777,55 +736,21 @@ def main():
     try:  # train the model
         if args.reset_drop:
             model_without_ddp.reset_drop_path(0.0)
-        for epoch in range(start_epoch, args.epochs):
+        for epoch in tqdm(range(start_epoch, args.epochs)):
             if epoch == 0 and args.reset_drop:
                 model_without_ddp.reset_drop_path(args.drop_path)
 
             if args.distributed:
                 target_loader_train.sampler.set_epoch(epoch)
-            train_metrics = train_epoch(
+            train_epoch(
                 epoch, model, source_loader_train, target_loader_train, optimizer, train_loss_fn, args,
                 lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
                 amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn)
-
-            if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                if args.local_rank == 0:
-                    _logger.info("Distributing BatchNorm running means and vars")
-                distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
-
-            eval_metrics = validate(epoch, model, target_loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast,
-                                    visualize=args.visualize, spike_rate=args.spike_rate,
-                                    tsne=args.tsne, conf_mat=args.conf_mat)
-            eval_top1 = eval_metrics["top1"]
-
-            if model_ema is not None and not args.model_ema_force_cpu:
-                if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                    distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
-
-                    ema_eval_metrics = validate(
-                        epoch, model_ema.ema, target_loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)',
-                        visualize=args.visualize, spike_rate=args.spike_rate,
-                        tsne=args.tsne, conf_mat=args.conf_mat)
-                    eval_metrics = ema_eval_metrics
-
             if lr_scheduler is not None:
                 # step LR for next epoch
-                lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
-
-            update_summary(
-                epoch, train_metrics, eval_metrics, os.path.join(output_dir, 'summary.csv'),
-                write_header=best_metric is None)
-
-            # if saver is not None and epoch >= args.n_warm_up:
-            if saver is not None:
-                # save proper checkpoint with eval metric
-                save_metric = eval_metrics[eval_metric]
-                best_metric, best_epoch = saver.save_checkpoint(epoch, metric=save_metric)
-
+                lr_scheduler.step(epoch + 1, None)
     except KeyboardInterrupt:
         pass
-    if best_metric is not None:
-        _logger.info('*** Best metric: {0} (epoch {1})'.format(best_metric, best_epoch))
 
 
 def train_epoch(
@@ -865,177 +790,14 @@ def train_epoch(
     P_Replacement = 0.0
     global source_input_list, source_label_list, CALTECH101_list, ImageNet_list
     for batch_idx, (inputs, label) in enumerate(target_loader):
-        P_Replacement = ((batch_idx + epoch * batch_len) / (set_MaxReplacement_epoch * batch_len)) ** 3
-        P_Replacement = P_Replacement if P_Replacement <= 1.0 else 1.0
-        sampler_list = label.tolist()
-        if args.target_dataset == "dvsc10" and args.source_dataset == "cifar10":
-            sampler_list = torch.tensor(sampler_list) * 6000 + torch.randint(0, 6000, (len(sampler_list),))
-        elif args.target_dataset == "dvsc10" and args.source_dataset == "dvsc10":
-            sampler_list = torch.tensor(sampler_list) * 900 + torch.randint(0, 900, (len(sampler_list),))
-        elif args.target_dataset == "NCALTECH101":
-            tmp_sampler_list = []
-            idx_list = []
-            for idx, label_sampler in enumerate(sampler_list):
-                if label_sampler == 19:
-                    tmp_sampler_list.append(0)
-                    idx_list.append(idx)
-                else:
-                    tmp_sampler_list.append(torch.randint(CALTECH101_list[label_sampler],
-                                                          CALTECH101_list[label_sampler + 1], (1,)).item())
-        elif args.target_dataset == "esimnet":
-            tmp_sampler_list = []
-            for idx, label_sampler in enumerate(sampler_list):  # 这里的label_sampler是一个列表
-                tmp_sampler_list.append(torch.randint(ImageNet_list[label_sampler],
-                                                      ImageNet_list[label_sampler + 1], (1,)).item())
-
-        source_input, source_label = [], []
-        if args.target_dataset == "dvsc10":
-            source_input, source_label = source_input_list[sampler_list], source_label_list[sampler_list]
-        if args.target_dataset == "NCALTECH101":
-            source_input, source_label = source_input_list[tmp_sampler_list], source_label_list[tmp_sampler_list]
-        if args.target_dataset == "esimnet":
-            train_dataset = source_loader  # 给传回来的重新命个名儿
-            source_loader_used = torch.utils.data.DataLoader(
-                train_dataset,
-                batch_size=args.batch_size, shuffle=False,
-                num_workers=8, pin_memory=True, sampler=TransferSampler(tmp_sampler_list))
-            source_input, source_label = next(iter(source_loader_used))
-        # for i in range(10):
-        #     # vis origin picture
-        #     plt.figure()
-        #     plt.imshow(source_input[i].permute(1, 2, 0))
-        #     plt.title("origin image")
-        #     plt.show()
-
-        # # vis HSV picture
-        # plt.figure()
-        # plt.imshow(convertor.rgb_to_hsv(inputs)[7, :, :, :].permute(1, 2, 0).numpy())
-        # plt.title("HSV image")
-        # plt.show()
-
-        # source_input = convertor.rgb_to_hsv(source_input)[:, -1, :, :].unsqueeze(1).repeat(1, args.step * 2, 1, 1)
-        if args.source_dataset == "dvsc10" or args.source_dataset == "NCALTECH101":
-            pass
-        else:
-            source_input = source_input[:, -1, :, :].unsqueeze(1).repeat(1, args.step * 2, 1, 1)
-            source_input = rearrange(source_input, 'b (t c) h w -> b t c h w', t=args.step)
-
-        if args.domain_loss_after:
-            pass
-        else:
-            for b in range(source_input.shape[0]):
-                if rd.uniform(0, 1) <= P_Replacement:
-                    source_input[b] = inputs[b, :, :, :, :]
-
-        # for i in range(10):
-        #     # vis HSV picture for v channel
-        #     plt.figure()
-        #     plt.imshow(source_input[i][0].permute(1, 2, 0)[:, :, -1].unsqueeze(2))
-        #     plt.title("HSV image for v channel")
-        #     plt.show()
-
-        if args.target_dataset == "NCALTECH101" and len(idx_list) > 0:
-            for i in range(len(idx_list)):
-                source_input[idx_list[i]] = inputs[idx_list[i]]
         last_batch = batch_idx == last_idx
-        data_time_m.update(time.time() - end)
-        if not args.prefetcher or args.target_dataset != 'imnet':
-            inputs, label = inputs.type(torch.FloatTensor).cuda(), label.cuda()
-            source_input, source_label = source_input.type(torch.FloatTensor).cuda(), label.cuda()
-            if mixup_fn is not None:
-                inputs, label = mixup_fn(inputs, label)
-                source_input, source_label = mixup_fn(source_input, source_label)
-        if args.channels_last:
-            inputs = inputs.contiguous(memory_format=torch.channels_last)
-            source_input = source_input.contiguous(memory_format=torch.channels_last)
-        with amp_autocast():
-            domain_rbg_list, domain_dvs_list, output_rgb, output_dvs = model(source_input, inputs)
-
-            # compute semantic loss
-            label_idx = [[] for i in range(args.num_classes)]
-            semantic_label_list = []
-            for idx, i in enumerate(label):
-                label_idx[i.item()].append(idx)
-            for i in label:
-                while True:
-                    label_tmp = torch.randint(0, args.num_classes, (1,)).item()
-                    if i.item() != label_tmp and len(label_idx[label_tmp]) > 0:  # NCALTECH101有空列表, 需要判断
-                        break
-                semantic_label_list.append(int(np.random.choice(label_idx[label_tmp], 1)))
-            semantic_rbg_list = []
-            semantic_loss = 0.
-            for i in range(len(domain_rbg_list)):
-                semantic_rbg_list.append(domain_rbg_list[i][semantic_label_list])
-            for i in range(len(domain_rbg_list)):
-                semantic_loss += torch.abs(CKA.linear_CKA(domain_dvs_list[i].view(args.batch_size, -1), semantic_rbg_list[i].view(args.batch_size, -1)))
-            semantic_loss /= len(domain_rbg_list)
-            if args.target_dataset == "dvsc10":
-                m = 0.1
-            else:
-                m = 0.3
-            if semantic_loss.item() - m < 0:
-                semantic_loss = torch.tensor(0., device=semantic_loss.device)
-
-            if args.domain_loss_after:
-                # compute domain loss
-                for b in range(source_input.shape[0]):
-                    if rd.uniform(0, 1) <= P_Replacement:
-                        for i in range(len(domain_rbg_list)):
-                            domain_rbg_list[i][b] = domain_dvs_list[i][b, :, :, :]
-
-            domain_loss = 0.
-            for i in range(len(domain_rbg_list)):
-                domain_loss += 1 - torch.abs(CKA.linear_CKA(domain_rbg_list[i].view(args.batch_size, -1), domain_dvs_list[i].view(args.batch_size, -1)))
-            domain_loss /= len(domain_rbg_list)
-            # compute cls loss
-            output_rgb = sum(output_rgb) / len(output_rgb)
-            output_dvs = sum(output_dvs) / len(output_dvs)
-            loss_rgb = loss_fn(output_rgb, label)
-            loss_dvs = loss_fn(output_dvs, label)
-
-            # loss = loss_rgb + loss_dvs
-            loss = loss_dvs
-            if args.domain_loss:
-                loss += args.domain_loss_coefficient * domain_loss
-            if args.semantic_loss and epoch <= set_MaxReplacement_epoch:
-                if args.target_dataset == "NCALTECH101" and epoch <= set_MaxReplacement_epoch * 0.5:
-                    # loss += args.semantic_loss_coefficient * semantic_loss * math.pow(10, -1.0 * float(set_MaxReplacement_epoch / (epoch+1)))
-                    pass
-                else:
-                    loss += args.semantic_loss_coefficient * semantic_loss
-
-        if not (args.cut_mix | args.mix_up | args.event_mix) and args.target_dataset != 'imnet':
-            acc1, acc5 = accuracy(output_dvs, label, topk=(1, 5))
-        else:
-            acc1, acc5 = torch.tensor([0.]), torch.tensor([0.])
-
-        closs = torch.tensor([0.], device=loss.device)
-
-        loss = loss + .1 * closs
-
-        spike_rate_avg_layer_str = ''
-        threshold_str = ''
-        if not args.distributed:
-            losses_m.update(loss.item(), inputs.size(0))
-            domain_losses_m.update(domain_loss.item(), inputs.size(0))
-            semantic_losses_m.update(semantic_loss.item(), inputs.size(0))
-            rgb_losses_m.update(loss_rgb.item(), inputs.size(0))
-            dvs_losses_m.update(loss_dvs.item(), inputs.size(0))
-            top1_m.update(acc1.item(), inputs.size(0))
-            top5_m.update(acc5.item(), inputs.size(0))
-            closses_m.update(closs.item(), inputs.size(0))
-
-            spike_rate_avg_layer = model.get_fire_rate().tolist()
-            spike_rate_avg_layer_str = ['{:.3f}'.format(i) for i in spike_rate_avg_layer]
-            threshold = model.get_threshold()
-            threshold_str = ['{:.3f}'.format(i.item()) for i in threshold]
+        loss = 0.0
 
         optimizer.zero_grad()
         if loss_scaler is not None:
             loss_scaler(
                 loss, optimizer, clip_grad=args.clip_grad, parameters=model.parameters(), create_graph=second_order)
         else:
-            loss.backward(create_graph=second_order)
             if args.noisy_grad != 0.:
                 random_gradient(model, args.noisy_grad)
             if args.clip_grad is not None:
@@ -1050,106 +812,19 @@ def train_epoch(
             model_ema.update(model)
         num_updates += 1
 
-        batch_time_m.update(time.time() - end)
-        if last_batch or batch_idx % args.log_interval == 0:
-            lrl = [param_group['lr'] for param_group in optimizer.param_groups]
-            lr = sum(lrl) / len(lrl)
+        lrl = [param_group['lr'] for param_group in optimizer.param_groups]
+        lr = sum(lrl) / len(lrl)
+        if batch_idx == last_idx:
+            global writer,total_count
+            writer.add_scalar('learning rate', lr, total_count)
+            print("write yes")
+            total_count += 1
 
-            mu_str = ''
-            sigma_str = ''
-            if not args.distributed:
-                if 'Noise' in args.node_type:
-                    mu, sigma = model.get_noise_param()
-                    mu_str = ['{:.3f}'.format(i.detach()) for i in mu]
-                    sigma_str = ['{:.3f}'.format(i.detach()) for i in sigma]
-
-            if args.distributed:
-                reduced_loss = reduce_tensor(loss.data, args.world_size)
-                losses_m.update(reduced_loss.item(), inputs.size(0))
-                closses_m.update(reduced_loss.item(), inputs.size(0))
-
-            if args.local_rank == 0:
-                if args.distributed:
-                    _logger.info(
-                        'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
-                        'Loss: {loss.val:>9.6f} ({loss.avg:>6.4f})  '
-                        'cLoss: {closs.val:>9.6f} ({closs.avg:>6.4f})  '
-                        'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
-                        'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})  '
-                        'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
-                        '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
-                        'LR: {lr:.3e}  '
-                        'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
-                            epoch,
-                            batch_idx, len(target_loader),
-                            100. * batch_idx / last_idx,
-                            loss=losses_m,
-                            closs=closses_m,
-                            top1=top1_m,
-                            top5=top5_m,
-                            batch_time=batch_time_m,
-                            rate=inputs.size(0) * args.world_size / batch_time_m.val,
-                            rate_avg=inputs.size(0) * args.world_size / batch_time_m.avg,
-                            lr=lr,
-                            data_time=data_time_m
-                        ))
-                else:
-                    _logger.info(
-                        'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
-                        'Loss: {loss.val:>9.6f} ({loss.avg:>6.4f})  '
-                        'cLoss: {closs.val:>9.6f} ({closs.avg:>6.4f})  '
-                        'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
-                        'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})  '
-                        'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
-                        '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
-                        'LR: {lr:.3e}  '
-                        'Data: {data_time.val:.3f} ({data_time.avg:.3f})\n'
-                        'Fire_rate: {spike_rate}\n'
-                        'Thres: {threshold}\n'
-                        'Mu: {mu_str}\n'
-                        'Sigma: {sigma_str}\n'
-                        'P_Replacement: {P_Replacement}\n'.format(
-                            epoch,
-                            batch_idx, len(target_loader),
-                            100. * batch_idx / last_idx,
-                            loss=losses_m,
-                            closs=closses_m,
-                            top1=top1_m,
-                            top5=top5_m,
-                            batch_time=batch_time_m,
-                            rate=inputs.size(0) * args.world_size / batch_time_m.val,
-                            rate_avg=inputs.size(0) * args.world_size / batch_time_m.avg,
-                            lr=lr,
-                            data_time=data_time_m,
-                            spike_rate=spike_rate_avg_layer_str,
-                            threshold=threshold_str,
-                            mu_str=mu_str,
-                            sigma_str=sigma_str,
-                            P_Replacement=P_Replacement,
-                        ))
-
-                if args.save_images and output_dir:
-                    torchvision.utils.save_image(
-                        inputs,
-                        os.path.join(output_dir, 'train-batch-%d.jpg' % batch_idx),
-                        padding=0,
-                        normalize=True)
-
-        if saver is not None and args.recovery_interval and (
-                last_batch or (batch_idx + 1) % args.recovery_interval == 0):
-            saver.save_recovery(epoch, batch_idx=batch_idx)
-
-        if lr_scheduler is not None:
-            lr_scheduler.step_update(num_updates=num_updates, metric=losses_m.avg)
-
-        end = time.time()
-    # end for
-
-    if hasattr(optimizer, 'sync_lookahead'):
-        optimizer.sync_lookahead()
-
-    return OrderedDict([('loss', losses_m.avg), ('domainLoss', domain_losses_m.avg), ('semanticLoss', semantic_losses_m.avg),
-                        ('rgbLoss', rgb_losses_m.avg), ('dvsLoss', dvs_losses_m.avg)])
+            if lr_scheduler is not None:
+                lr_scheduler.step_update(num_updates=total_count)
+        if hasattr(optimizer, 'sync_lookahead'):
+            optimizer.sync_lookahead()
+    return None
 
 def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
              log_suffix='', visualize=False, spike_rate=False, tsne=False, conf_mat=False):

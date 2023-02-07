@@ -742,6 +742,98 @@ def get_dvsc10_data(batch_size, step, dvs_da=False, **kwargs):
     return train_loader, test_loader, mixup_active, None
 
 
+
+def get_transfer_dvsc10_data(batch_size, step, dvs_da=False, **kwargs):
+    """
+    获取DVS CIFAR10数据
+    http://journal.frontiersin.org/article/10.3389/fnins.2017.00309/full
+    :param batch_size: batch size
+    :param step: 仿真步长
+    :param kwargs:
+    :return: (train loader, test loader, mixup_active, mixup_fn)
+    """
+    size = kwargs['size'] if 'size' in kwargs else 48
+    snr = kwargs['snr'] if 'snr' in kwargs else 0
+    train_data_ratio = kwargs['train_data_ratio'] if 'train_data_ratio' in kwargs else 1.0
+    sensor_size = tonic.datasets.CIFAR10DVS.sensor_size
+    train_transform = transforms.Compose([
+        # tonic.transforms.Denoise(filter_time=10000),
+        # tonic.transforms.DropEvent(p=0.1),
+        tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step), ])
+    test_transform = transforms.Compose([
+        # tonic.transforms.Denoise(filter_time=10000),
+        tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step), ])
+    train_dataset = tonic.datasets.CIFAR10DVS(os.path.join(DATA_DIR, 'DVS/DVS_Cifar10'), transform=train_transform)
+    test_dataset = tonic.datasets.CIFAR10DVS(os.path.join(DATA_DIR, 'DVS/DVS_Cifar10'), transform=test_transform)
+
+    train_transform = transforms.Compose([
+    lambda x: torch.tensor(x, dtype=torch.float),
+    lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),])
+
+
+    test_transform = transforms.Compose([
+        lambda x: torch.tensor(x, dtype=torch.float),
+        lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),
+    ])   # 这里lambda返回的是地址, 注意不要用List复用.
+
+    train_dataset = DiskCachedDataset(train_dataset,
+                                      cache_path=os.path.join(DATA_DIR, 'DVS/DVS_Cifar10/train_cache_{}'.format(step)),
+                                      transform=train_transform)
+    test_dataset = DiskCachedDataset(test_dataset,
+                                     cache_path=os.path.join(DATA_DIR, 'DVS/DVS_Cifar10/test_cache_{}'.format(step)),
+                                     transform=test_transform)
+
+    num_train = len(train_dataset)
+    num_per_cls = num_train // 10
+    indices_train, indices_test = [], []
+    portion = kwargs['portion'] if 'portion' in kwargs else .9
+    for i in range(10):
+        indices_train.extend(
+            list(range(i * num_per_cls, round(i * num_per_cls + num_per_cls * portion))))
+        indices_test.extend(
+            list(range(round(i * num_per_cls + num_per_cls * portion), (i + 1) * num_per_cls)))
+
+    mix_up, cut_mix, event_mix, beta, prob, num, num_classes, noise, gaussian_n = unpack_mix_param(kwargs)
+    mixup_active = cut_mix | event_mix | mix_up
+
+    if cut_mix:
+        # print('cut_mix', beta, prob, num, num_classes)
+        train_dataset = CutMix(train_dataset,
+                               beta=beta,
+                               prob=prob,
+                               num_mix=num,
+                               num_class=num_classes,
+                               indices=indices_train,
+                               noise=noise)
+
+    if event_mix:
+        train_dataset = EventMix(train_dataset,
+                                 beta=beta,
+                                 prob=prob,
+                                 num_mix=num,
+                                 num_class=num_classes,
+                                 indices=indices_train,
+                                 noise=noise,
+                                 gaussian_n=gaussian_n)
+
+    if mix_up:
+        train_dataset = MixUp(train_dataset,
+                              beta=beta,
+                              prob=prob,
+                              num_mix=num,
+                              num_class=num_classes,
+                              indices=indices_train,
+                              noise=noise)
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=len(indices_train),
+        sampler=TransferSampler(indices_train),
+        pin_memory=True, drop_last=True, num_workers=8
+    )
+
+    return train_loader, None, mixup_active, None
+
+
 def get_NCALTECH101_data(batch_size, step, dvs_da=False, **kwargs):
     """
     获取NCaltech101数据
@@ -876,6 +968,99 @@ def get_NCALTECH101_data(batch_size, step, dvs_da=False, **kwargs):
     )
 
     return train_loader, test_loader, mixup_active, None
+
+
+def get_transfer_NCALTECH101_data(batch_size, step, dvs_da=False, **kwargs):
+    """
+    获取NCaltech101数据
+    http://journal.frontiersin.org/Article/10.3389/fnins.2015.00437/abstract
+    :param batch_size: batch size
+    :param step: 仿真步长
+    :param kwargs:
+    :return: (train loader, test loader, mixup_active, mixup_fn)
+    """
+    sensor_size = tonic.datasets.NCALTECH101.sensor_size
+    cls_count = tonic.datasets.NCALTECH101.cls_count
+    dataset_length = tonic.datasets.NCALTECH101.length
+    portion = kwargs['portion'] if 'portion' in kwargs else .9
+    size = kwargs['size'] if 'size' in kwargs else 48
+    snr = kwargs['snr'] if 'snr' in kwargs else 0
+    train_data_ratio = kwargs['train_data_ratio'] if 'train_data_ratio' in kwargs else 1.0
+    # print('portion', portion)
+    train_sample_weight = []
+    train_sample_index = []
+    train_count = 0
+    test_sample_index = []
+    idx_begin = 0
+    for count in cls_count:
+        sample_weight = dataset_length / count
+        train_sample = round(portion * count)
+        test_sample = count - train_sample
+        train_count += int(train_sample * train_data_ratio)
+        train_sample_weight.extend(
+            [sample_weight] * int(train_sample * train_data_ratio)
+        )
+        train_sample_weight.extend(
+            [0.] * (train_sample - int(train_sample * train_data_ratio))
+        )
+        train_sample_weight.extend(
+            [0.] * test_sample
+        )
+        train_sample_index.extend(
+            sample(list(range(idx_begin, idx_begin + train_sample)), int(train_sample * train_data_ratio))
+        )
+        test_sample_index.extend(
+            list(range(idx_begin + train_sample, idx_begin + train_sample + test_sample))
+        )
+        idx_begin += count
+
+    train_sampler = torch.utils.data.sampler.WeightedRandomSampler(train_sample_weight, train_count)
+    test_sampler = torch.utils.data.sampler.SubsetRandomSampler(test_sample_index)
+
+    train_transform = transforms.Compose([
+        # tonic.transforms.Denoise(filter_time=10000),
+        # tonic.transforms.DropEvent(p=0.1),
+        tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step), ])
+    test_transform = transforms.Compose([
+        # tonic.transforms.Denoise(filter_time=10000),
+        tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step), ])
+
+    train_dataset = tonic.datasets.NCALTECH101(os.path.join(DATA_DIR, 'DVS/NCALTECH101'), transform=train_transform)
+    test_dataset = tonic.datasets.NCALTECH101(os.path.join(DATA_DIR, 'DVS/NCALTECH101'), transform=test_transform)
+
+    train_transform = transforms.Compose([
+        lambda x: torch.tensor(x, dtype=torch.float),
+        lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),
+    ])
+
+    test_transform = transforms.Compose([
+        lambda x: torch.tensor(x, dtype=torch.float),
+        lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),
+    ])  # 这里lambda返回的是地址, 注意不要用List复用.
+
+    train_dataset = DiskCachedDataset(train_dataset,
+                                      cache_path=os.path.join(DATA_DIR, 'DVS/NCALTECH101/train_cache_{}'.format(step)),
+                                      transform=train_transform, num_copies=3)
+    test_dataset = DiskCachedDataset(test_dataset,
+                                     cache_path=os.path.join(DATA_DIR, 'DVS/NCALTECH101/test_cache_{}'.format(step)),
+                                     transform=test_transform, num_copies=3)
+
+    mix_up, cut_mix, event_mix, beta, prob, num, num_classes, noise, gaussian_n = unpack_mix_param(kwargs)
+    mixup_active = cut_mix | event_mix | mix_up
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=len(train_sample_index),
+        sampler=TransferSampler(train_sample_index),
+        pin_memory=True, drop_last=True, num_workers=8
+    )
+
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=batch_size,
+        sampler=test_sampler,
+        pin_memory=True, drop_last=False, num_workers=2
+    )
+
+    return train_loader, None, None, None
 
 
 def get_NCARS_data(batch_size, step, **kwargs):
