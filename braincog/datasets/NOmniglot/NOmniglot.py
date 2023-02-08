@@ -32,7 +32,8 @@ class NOmniglot(Dataset):
             print(f'frames data root {frames_root} already exists.')
 
         self.datadict, self.num_classes = list_class_files(events_npy_root, frames_root, True, use_npz=use_npz)
-
+        list_class_files('/data/datasets/DVS/NOmniglot/events_npy/background', '/data/datasets/DVS/NOmniglot/fnum_12_dtype_event_npz_True/background',
+                         True, use_npz=True)
         self.datalist = []
         for i in self.datadict:
             self.datalist.extend([(j, i) for j in self.datadict[i]])

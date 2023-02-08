@@ -35,7 +35,8 @@ class NOmniglotfull(Dataset):
 
 
 if __name__ == '__main__':
-    db_train = NOmniglotfull('../../data/', train=True, frames_num=4, data_type='event')
+    db_train = NOmniglotfull('/data/datasets/DVS/NOmniglot/', train=True, frames_num=12, data_type='event', use_npz=True)
     dataloadertrain = DataLoader(db_train, batch_size=16, shuffle=True, num_workers=16, pin_memory=True)
-    for x_spt, y_spt, x_qry, y_qry in dataloadertrain:
-        print(x_spt.shape)
+    for x,y in dataloadertrain:
+        print(x.shape)
+        print(y.shape)

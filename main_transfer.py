@@ -131,7 +131,7 @@ parser.add_argument('--warmup-lr', type=float, default=1e-6, metavar='LR',
                     help='warmup learning rate (default: 0.0001)')
 parser.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',
                     help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
-parser.add_argument('--epochs', type=int, default=300, metavar='N',
+parser.add_argument('--epochs', type=int, default=600, metavar='N',
                     help='number of epochs to train (default: 2)')
 parser.add_argument('--start-epoch', default=None, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -335,8 +335,8 @@ parser.add_argument('--semantic-loss', action='store_true',
                     help='add semantic loss')
 parser.add_argument('--domain-loss-coefficient', type=float, default=1.0,
                     help='domain loss coefficient(default: 1.0)')
-parser.add_argument('--semantic-loss-coefficient', type=float, default=0.5,
-                    help='domain loss coefficient(default: 0.5)')
+parser.add_argument('--semantic-loss-coefficient', type=float, default=1.0,
+                    help='domain loss coefficient(default: 1.0)')
 
 parser.add_argument('--DVS-DA', action='store_true',
                     help='use DA on DVS')
@@ -993,16 +993,15 @@ def train_epoch(
             loss_rgb = loss_fn(output_rgb, label)
             loss_dvs = loss_fn(output_dvs, label)
 
-            # loss = loss_rgb + loss_dvs
-            loss = loss_dvs
+            loss = 0 * loss_rgb + loss_dvs
             if args.domain_loss:
                 loss += args.domain_loss_coefficient * domain_loss
             if args.semantic_loss and epoch <= set_MaxReplacement_epoch:
-                if args.target_dataset == "NCALTECH101" and epoch <= set_MaxReplacement_epoch * 0.5:
-                    # loss += args.semantic_loss_coefficient * semantic_loss * math.pow(10, -1.0 * float(set_MaxReplacement_epoch / (epoch+1)))
-                    pass
-                else:
-                    loss += args.semantic_loss_coefficient * semantic_loss
+                # if args.target_dataset == "NCALTECH101" and epoch <= set_MaxReplacement_epoch * 0.5:
+                #     # loss += args.semantic_loss_coefficient * semantic_loss * math.pow(10, -1.0 * float(set_MaxReplacement_epoch / (epoch+1)))
+                #     pass
+                # else:
+                loss += args.semantic_loss_coefficient * semantic_loss
 
         if not (args.cut_mix | args.mix_up | args.event_mix) and args.target_dataset != 'imnet':
             acc1, acc5 = accuracy(output_dvs, label, topk=(1, 5))
