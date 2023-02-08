@@ -669,10 +669,13 @@ def main():
         _logger=_logger,
         train_data_ratio=args.traindata_ratio,
         snr=args.snr,
+        data_mode="full",
+        frames_num=12,
+        data_type="frequency"
     )
 
     global source_input_list, source_label_list, CALTECH101_list, ImageNet_list
-    if args.target_dataset == "dvsc10" or args.target_dataset == "NCALTECH101":  # ImageNet中回来的loader其实是数据集,在后面处理
+    if args.target_dataset == "dvsc10" or args.target_dataset == "NCALTECH101" or args.target_dataset == "nomni":  # ImageNet中回来的loader其实是数据集,在后面处理
         source_input_list, source_label_list = next(iter(source_loader_train))
 
     if args.source_dataset == "CALTECH101":
@@ -887,6 +890,8 @@ def train_epoch(
             for idx, label_sampler in enumerate(sampler_list):  # 这里的label_sampler是一个列表
                 tmp_sampler_list.append(torch.randint(ImageNet_list[label_sampler],
                                                       ImageNet_list[label_sampler + 1], (1,)).item())
+        elif args.target_dataset == "nomni":
+            sampler_list = torch.tensor(sampler_list) * 20 + torch.randint(0, 20, (len(sampler_list),))
 
         source_input, source_label = [], []
         if args.target_dataset == "dvsc10":
@@ -900,6 +905,8 @@ def train_epoch(
                 batch_size=args.batch_size, shuffle=False,
                 num_workers=8, pin_memory=True, sampler=TransferSampler(tmp_sampler_list))
             source_input, source_label = next(iter(source_loader_used))
+        if args.target_dataset == "nomni":
+            source_input, source_label = source_input_list[sampler_list], source_label_list[sampler_list]
         # for i in range(10):
         #     # vis origin picture
         #     plt.figure()
@@ -997,11 +1004,11 @@ def train_epoch(
             if args.domain_loss:
                 loss += args.domain_loss_coefficient * domain_loss
             if args.semantic_loss and epoch <= set_MaxReplacement_epoch:
-                # if args.target_dataset == "NCALTECH101" and epoch <= set_MaxReplacement_epoch * 0.5:
-                #     # loss += args.semantic_loss_coefficient * semantic_loss * math.pow(10, -1.0 * float(set_MaxReplacement_epoch / (epoch+1)))
-                #     pass
-                # else:
-                loss += args.semantic_loss_coefficient * semantic_loss
+                if args.target_dataset == "NCALTECH101" and epoch <= set_MaxReplacement_epoch * 0.5:
+                    # loss += args.semantic_loss_coefficient * semantic_loss * math.pow(10, -1.0 * float(set_MaxReplacement_epoch / (epoch+1)))
+                    pass
+                else:
+                    loss += args.semantic_loss_coefficient * semantic_loss
 
         if not (args.cut_mix | args.mix_up | args.event_mix) and args.target_dataset != 'imnet':
             acc1, acc5 = accuracy(output_dvs, label, topk=(1, 5))

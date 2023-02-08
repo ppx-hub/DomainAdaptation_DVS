@@ -1,4 +1,4 @@
-__all__ = ['convnet', 'resnet', 'base_module', 'glsnn', 'qsnn', 'resnet19_snn']
+__all__ = ['convnet', 'resnet', 'base_module', 'glsnn', 'qsnn', 'resnet19_snn', 'scnn']
 
 from . import (
     convnet,
@@ -6,5 +6,6 @@ from . import (
     base_module,
     glsnn,
     qsnn,
-    resnet19_snn
+    resnet19_snn,
+    scnn
 )

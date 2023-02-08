@@ -1180,10 +1180,10 @@ def get_nomni_data(batch_size, train_portion=1., **kwargs):
     if data_mode == "full":
         train_datasets = NOmniglotfull(root=os.path.join(DATA_DIR, 'DVS/NOmniglot'), train=True, frames_num=frames_num,
                                        data_type=data_type,
-                                       transform=train_transform)
+                                       transform=train_transform, use_npz=True)
         test_datasets = NOmniglotfull(root=os.path.join(DATA_DIR, 'DVS/NOmniglot'), train=False, frames_num=frames_num,
                                       data_type=data_type,
-                                      transform=test_transform)
+                                      transform=test_transform, use_npz=True)
 
     elif data_mode == "nkks":
         train_datasets = NOmniglotNWayKShot(os.path.join(DATA_DIR, 'DVS/NOmniglot'),
@@ -1222,6 +1222,37 @@ def get_nomni_data(batch_size, train_portion=1., **kwargs):
         pin_memory=True, drop_last=False
     )
     return train_loader, test_loader, None, None
+
+
+
+def get_transfer_omni_data(batch_size, train_portion=1., **kwargs):
+    """
+    获取Omniglot数据
+    :param batch_size:batch的大小
+    :param data_mode:一共full nkks pair三种模式
+    :param frames_num:一个样本帧的个数
+    :param data_type:event frequency两种模式
+    """
+
+    transform = transforms.Compose([
+        transforms.Resize((28, 28)),
+        transforms.ToTensor()])
+
+    train_dataset = datasets.Omniglot(
+        root="/data/datasets/", background=True, download=True, transform=transform
+    )
+    test_dataset = datasets.Omniglot(
+        root="/data/datasets/", background=False, download=True, transform=transform
+    )
+    dataset = torch.utils.data.ConcatDataset([train_dataset, test_dataset])
+    dataset_length = len(dataset)
+    train_loader = torch.utils.data.DataLoader(
+        dataset, batch_size=35000, num_workers=12,
+        pin_memory=True, drop_last=False,
+        sampler=TransferSampler(torch.arange(0, dataset_length).tolist())
+    )
+
+    return train_loader, None, None, None
 
 
 def get_esimnet_data(batch_size, step, **kwargs):

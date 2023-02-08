@@ -611,6 +611,9 @@ def main():
         reconstruct=args.reconstructed,
         _logger=_logger,
         train_data_ratio=args.traindata_ratio,
+        data_mode="full",
+        frames_num=12,
+        data_type="frequency"
     )
 
     if args.loss_fn == 'mse':
