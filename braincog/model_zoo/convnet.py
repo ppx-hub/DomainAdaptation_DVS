@@ -314,3 +314,7 @@ def dvs_convnet(step,
                         out_channels=out_channels,
                         spike_output=spike_output,
                         **kwargs)
+
+if __name__ == '__main__':
+    model = cifar_convnet(step=1, encode_type='direct', spike_output=False, node_type=ReLUNode, num_classes=10)
+    print("model:{}".format(model))

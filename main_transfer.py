@@ -866,6 +866,12 @@ def train_epoch(
     else:
         set_MaxReplacement_epoch = 0.5 * args.epochs
     P_Replacement = 0.0
+
+    if epoch < set_MaxReplacement_epoch:
+        loss_fn = nn.CrossEntropyLoss().cuda()
+    else:
+        loss_fn = LabelSmoothingCrossEntropy(smoothing=args.smoothing).cuda()
+
     global source_input_list, source_label_list, CALTECH101_list, ImageNet_list
     for batch_idx, (inputs, label) in enumerate(target_loader):
         P_Replacement = ((batch_idx + epoch * batch_len) / (set_MaxReplacement_epoch * batch_len)) ** 3
@@ -1004,7 +1010,7 @@ def train_epoch(
             if args.domain_loss:
                 loss += args.domain_loss_coefficient * domain_loss
             if args.semantic_loss and epoch <= set_MaxReplacement_epoch:
-                if args.target_dataset == "NCALTECH101" and epoch <= set_MaxReplacement_epoch * 0.5:
+                if args.target_dataset == "NCALTECH101" and epoch <= set_MaxReplacement_epoch * 0.66:
                     # loss += args.semantic_loss_coefficient * semantic_loss * math.pow(10, -1.0 * float(set_MaxReplacement_epoch / (epoch+1)))
                     pass
                 else:

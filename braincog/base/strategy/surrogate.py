@@ -308,7 +308,28 @@ class STDPGrad(SurrogateFunctionBase):
         return stdp.apply(x)
 
 
+class actfun(torch.autograd.Function):
 
+    @staticmethod
+    def forward(ctx, input):
+        ctx.save_for_backward(input)
+        return input.gt(0.5).float()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, = ctx.saved_tensors
+        grad_input = grad_output.clone()
+        temp = abs(input - 0.5) < 0.5
+        return grad_input * temp.float()
+
+
+class ActFunGrad(SurrogateFunctionBase):
+    def __init__(self, alpha=2., requires_grad=False):
+        super().__init__(alpha, requires_grad)
+
+    @staticmethod
+    def act_fun(x, alpha):
+        return actfun.apply(x)
 
 
 class backeigate(torch.autograd.Function):

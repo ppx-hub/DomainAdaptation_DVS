@@ -330,8 +330,9 @@ def get_cifar10_data(batch_size, num_workers=8, same_da=False, **kwargs):
     :param kwargs:
     :return: (train loader, test loader, mixup_active, mixup_fn)
     """
-    train_datasets, _ = build_dataset(True, 32, 'CIFAR10', DATA_DIR, same_da)
-    test_datasets, _ = build_dataset(False, 32, 'CIFAR10', DATA_DIR, same_da)
+    use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
+    train_datasets, _ = build_dataset(True, 32, 'CIFAR10', DATA_DIR, same_da, False)
+    test_datasets, _ = build_dataset(False, 32, 'CIFAR10', DATA_DIR, same_da, False)
 
     train_loader = torch.utils.data.DataLoader(
         train_datasets, batch_size=batch_size,
@@ -912,6 +913,7 @@ def get_NCALTECH101_data(batch_size, step, dvs_da=False, **kwargs):
             train_transform = transforms.Compose([
                 lambda x: torch.tensor(x, dtype=torch.float),
                 lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),
+                transforms.RandomCrop(size, padding=size // 12),
             ])
     test_transform = transforms.Compose([
         lambda x: torch.tensor(x, dtype=torch.float),
@@ -1214,11 +1216,11 @@ def get_nomni_data(batch_size, train_portion=1., **kwargs):
         pass
 
     train_loader = torch.utils.data.DataLoader(
-        train_datasets, batch_size=batch_size, num_workers=12,
+        train_datasets, batch_size=batch_size, num_workers=4,
         pin_memory=True, drop_last=True, shuffle=True
     )
     test_loader = torch.utils.data.DataLoader(
-        test_datasets, batch_size=batch_size, num_workers=12,
+        test_datasets, batch_size=batch_size, num_workers=4,
         pin_memory=True, drop_last=False
     )
     return train_loader, test_loader, None, None

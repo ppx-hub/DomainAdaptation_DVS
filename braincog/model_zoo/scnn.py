@@ -36,15 +36,26 @@ class SCNN(BaseModule):
 
         self.dataset = kwargs['dataset']
         self.feature = nn.Sequential(
-            BaseConvModule(2, 15, kernel_size=(5, 5), padding=(0, 0), node=self.node),
+            nn.Conv2d(in_channels=2, out_channels=15, kernel_size=5, padding=0, stride=1, bias=False),
+            self.node(),
             nn.AvgPool2d(2),
-            BaseConvModule(15, 40, kernel_size=(5, 5), padding=(0, 0), node=self.node),
+            nn.Conv2d(in_channels=15, out_channels=40, kernel_size=5, padding=0, stride=1, bias=False),
+            self.node(),
             nn.AvgPool2d(2),
         )
 
         self.fc1 = nn.Linear(640, 300)
         self.node1 = self.node()
         self.fc2 = nn.Linear(300, 1623)
+
+        # 初始化权重
+        for m in self.modules():
+            # if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+            if isinstance(m, nn.Conv2d):
+                # method 2 kaiming
+                nn.init.kaiming_normal_(m.weight.data)
+            if isinstance(m, nn.Linear):
+                nn.init.uniform_(m.weight, -0.1, 0.1)
 
     def forward(self, inputs):
         inputs = self.encoder(inputs)
@@ -88,9 +99,11 @@ class Transfer_SCNN(BaseModule):
         self.dataset = kwargs['dataset']
 
         self.feature = nn.Sequential(
-            BaseConvModule(2, 15, kernel_size=(5, 5), padding=(0, 0), node=self.node),
+            nn.Conv2d(in_channels=2, out_channels=15, kernel_size=5, padding=0, stride=1, bias=False),
+            self.node(),
             nn.AvgPool2d(2),
-            BaseConvModule(15, 40, kernel_size=(5, 5), padding=(0, 0), node=self.node),
+            nn.Conv2d(in_channels=15, out_channels=40, kernel_size=5, padding=0, stride=1, bias=False),
+            self.node(),
             nn.AvgPool2d(2),
         )
 
@@ -98,6 +111,14 @@ class Transfer_SCNN(BaseModule):
         self.node1 = self.node()
         self.fc2 = nn.Linear(300, 1623)
 
+        # 初始化权重
+        for m in self.modules():
+            # if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+            if isinstance(m, nn.Conv2d):
+                # method 2 kaiming
+                nn.init.kaiming_normal_(m.weight.data)
+            if isinstance(m, nn.Linear):
+                nn.init.uniform_(m.weight, -0.1, 0.1)
 
     def forward(self, inputs_rgb, inputs_dvs):
         inputs_rgb = self.encoder(inputs_rgb)
@@ -112,12 +133,12 @@ class Transfer_SCNN(BaseModule):
 
             # add feature output to list (membrane potential)
             x_rgb = self.feature(x_rgb)
-            outputs_rgb_feature.append(self.feature[-2].node.mem)
 
             # add fc output to list (firing rate)
             x_rgb = x_rgb.view(x_rgb.shape[0], -1)
             x_rgb = self.fc1(x_rgb)
             x_rgb = self.node1(x_rgb)
+            outputs_rgb_feature.append(self.node1.mem)
             x_rgb = self.fc2(x_rgb)
             outputs_rgb.append(x_rgb)
 
@@ -125,10 +146,10 @@ class Transfer_SCNN(BaseModule):
         for t in range(self.step):
             x_dvs = inputs_dvs[t]
             x_dvs = self.feature(x_dvs)
-            outputs_dvs_feature.append(self.feature[-2].node.mem)
             x_dvs = x_dvs.view(x_dvs.shape[0], -1)
             x_dvs = self.fc1(x_dvs)
             x_dvs = self.node1(x_dvs)
+            outputs_dvs_feature.append(self.node1.mem)
             x_dvs = self.fc2(x_dvs)
             outputs_dvs.append(x_dvs)
 
