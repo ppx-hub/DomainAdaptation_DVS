@@ -150,7 +150,7 @@ class VGG_SNN(BaseModule):
         super().__init__(step, encode_type, *args, **kwargs)
 
         self.n_preact = kwargs['n_preact'] if 'n_preact' in kwargs else False
-
+        self.TET_loss = kwargs['TET_loss'] if 'TET_loss' in kwargs else False
         self.num_classes = num_classes
 
         self.node = node_type
@@ -197,8 +197,10 @@ class VGG_SNN(BaseModule):
                 x = self.feature(x)
                 x = self.fc(x)
                 outputs.append(x)
-
-            return sum(outputs) / len(outputs)
+            if self.TET_loss is True:
+                return outputs
+            else:
+                return sum(outputs) / len(outputs)
 
 
 

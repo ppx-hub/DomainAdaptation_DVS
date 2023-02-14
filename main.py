@@ -326,6 +326,12 @@ parser.add_argument('--DVS-DA', action='store_true',
 parser.add_argument('--traindata-ratio', default=1.0, type=float,
                     help='training data ratio')
 
+# use TET loss or not (all default False, do not use)
+parser.add_argument('--TET-loss-first', action='store_true',
+                    help='use TET loss one part')
+
+parser.add_argument('--TET-loss-second', action='store_true',
+                    help='use TET loss two part')
 
 try:
     from apex import amp
@@ -377,6 +383,8 @@ def main():
             "DA_{}".format(args.DVS_DA),
             "ls_{}".format(args.smoothing),
             "traindataratio_{}".format(args.traindata_ratio),
+            "TET_first_{}".format(args.TET_loss_first),
+            "TET_second_{}".format(args.TET_loss_second),
         ])
         output_dir = get_outdir(output_base, 'Baseline', exp_name)
         args.output_dir = output_dir
@@ -435,7 +443,8 @@ def main():
         temporal_flatten=args.temporal_flatten,
         layer_by_layer=args.layer_by_layer,
         n_groups=args.n_groups,
-        reconstruct=args.reconstructed
+        reconstruct=args.reconstructed,
+        TET_loss=args.TET_loss_first or args.TET_loss_second
     )
 
     if 'dvs' in args.dataset:
@@ -761,7 +770,23 @@ def train_epoch(
             inputs = inputs.contiguous(memory_format=torch.channels_last)
         with amp_autocast():
             output = model(inputs)
-            loss = loss_fn(output, target)
+            tet_loss = 0.0
+            loss = 0.0
+            lamb = 1e-3
+            if args.TET_loss_first or args.TET_loss_second:  # 第一项必须有，也就是测两个，第一个何第一个加第二个
+                for i in range(len(output)):
+                    tet_loss += loss_fn(output[i], target)
+                tet_loss /= len(output)
+                loss = (1 - lamb) * tet_loss
+            else:
+                loss = loss_fn(output, target)
+            if args.TET_loss_second:
+                y = torch.zeros_like(output[-1]).fill_(args.threshold)
+                secondLoss = torch.nn.MSELoss()
+                tet_loss_second = secondLoss(output[-1], y)
+                loss += lamb * tet_loss_second
+            if args.TET_loss_first or args.TET_loss_second:
+                output = sum(output) / len(output)
         if not (args.cut_mix | args.mix_up | args.event_mix) and args.dataset != 'imnet':
             # print(output.shape, target.shape)
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
@@ -941,6 +966,8 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
 
             with amp_autocast():
                 output = model(inputs)
+            if args.TET_loss_first or args.TET_loss_second:
+                output = sum(output) / len(output)
             if isinstance(output, (tuple, list)):
                 output = output[0]
 

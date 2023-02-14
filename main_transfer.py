@@ -338,6 +338,14 @@ parser.add_argument('--domain-loss-coefficient', type=float, default=1.0,
 parser.add_argument('--semantic-loss-coefficient', type=float, default=1.0,
                     help='domain loss coefficient(default: 1.0)')
 
+# use TET loss or not (all default False, do not use)
+
+parser.add_argument('--TET-loss-first', action='store_true',
+                    help='use TET loss one part')
+
+parser.add_argument('--TET-loss-second', action='store_true',
+                    help='use TET loss two part')
+
 parser.add_argument('--DVS-DA', action='store_true',
                     help='use DA on DVS')
 
@@ -350,8 +358,6 @@ parser.add_argument('--snr', default=0, type=int,
                     help='random noise amplitude controled by snr, 0 means no noise')
 
 
-parser.add_argument('--domain-loss-after', action='store_true',
-                    help='domain loss after')
 
 source_input_list, source_label_list = [], []
 CALTECH101_list, ImageNet_list = [], []
@@ -410,10 +416,11 @@ def main():
             "SNR_{}".format(args.snr),
             "domainLoss_{}".format(args.domain_loss),
             "semanticLoss_{}".format(args.semantic_loss),
-            "domain_loss_coefficient{}".format(args.domain_loss_coefficient),
-            "semantic_loss_coefficient{}".format(args.semantic_loss_coefficient),
+            "domainLoss_coefficient{}".format(args.domain_loss_coefficient),
+            "semanticLoss_coefficient{}".format(args.semantic_loss_coefficient),
             "traindataratio_{}".format(args.traindata_ratio),
-            "lossafter_{}".format(args.domain_loss_after)
+            "TETfirst_{}".format(args.TET_loss_first),
+            "TETsecond_{}".format(args.TET_loss_second),
         ])
         output_dir = get_outdir(output_base, 'train_TCKA_test', exp_name)
         args.output_dir = output_dir
@@ -933,12 +940,9 @@ def train_epoch(
             source_input = source_input[:, -1, :, :].unsqueeze(1).repeat(1, args.step * 2, 1, 1)
             source_input = rearrange(source_input, 'b (t c) h w -> b t c h w', t=args.step)
 
-        if args.domain_loss_after:
-            pass
-        else:
-            for b in range(source_input.shape[0]):
-                if rd.uniform(0, 1) <= P_Replacement:
-                    source_input[b] = inputs[b, :, :, :, :]
+        for b in range(source_input.shape[0]):
+            if rd.uniform(0, 1) <= P_Replacement:
+                source_input[b] = inputs[b, :, :, :, :]
 
         # for i in range(10):
         #     # vis HSV picture for v channel
@@ -989,22 +993,45 @@ def train_epoch(
             if semantic_loss.item() - m < 0:
                 semantic_loss = torch.tensor(0., device=semantic_loss.device)
 
-            if args.domain_loss_after:
-                # compute domain loss
-                for b in range(source_input.shape[0]):
-                    if rd.uniform(0, 1) <= P_Replacement:
-                        for i in range(len(domain_rbg_list)):
-                            domain_rbg_list[i][b] = domain_dvs_list[i][b, :, :, :]
+            # if args.domain_loss_after:
+            #     # compute domain loss
+            #     for b in range(source_input.shape[0]):
+            #         if rd.uniform(0, 1) <= P_Replacement:
+            #             for i in range(len(domain_rbg_list)):
+            #                 domain_rbg_list[i][b] = domain_dvs_list[i][b, :, :, :]
 
             domain_loss = 0.
             for i in range(len(domain_rbg_list)):
                 domain_loss += 1 - torch.abs(CKA.linear_CKA(domain_rbg_list[i].view(args.batch_size, -1), domain_dvs_list[i].view(args.batch_size, -1)))
             domain_loss /= len(domain_rbg_list)
+
             # compute cls loss
-            output_rgb = sum(output_rgb) / len(output_rgb)
-            output_dvs = sum(output_dvs) / len(output_dvs)
-            loss_rgb = loss_fn(output_rgb, label)
-            loss_dvs = loss_fn(output_dvs, label)
+            lamb = 1e-3
+            if args.TET_loss_first or args.TET_loss_second:  # 第一项必须有，也就是测两个，第一个何第一个加第二个
+                loss_rgb = 0
+                tet_loss_first = 0
+                tet_loss_second = 0
+                assert len(output_rgb) == len(output_dvs)
+                for i in range(len(output_rgb)):
+                    loss_rgb += loss_fn(output_rgb[i], label)
+                    tet_loss_first += loss_fn(output_dvs[i], label)
+                loss_rgb /= len(output_rgb)
+                tet_loss_first /= len(output_dvs)
+
+                if args.TET_loss_second:
+                    y = torch.zeros_like(output_dvs[-1]).fill_(args.threshold)
+                    secondLoss = torch.nn.MSELoss()
+                    tet_loss_second = secondLoss(output_dvs[-1], y)
+                else:
+                    lamb = 0.0
+                loss_dvs = (1 - lamb) * tet_loss_first + lamb * tet_loss_second
+                output_rgb = sum(output_rgb) / len(output_rgb)
+                output_dvs = sum(output_dvs) / len(output_dvs)
+            else:
+                output_rgb = sum(output_rgb) / len(output_rgb)
+                output_dvs = sum(output_dvs) / len(output_dvs)
+                loss_rgb = loss_fn(output_rgb, label)
+                loss_dvs = loss_fn(output_dvs, label)
 
             loss = 0 * loss_rgb + loss_dvs
             if args.domain_loss:
