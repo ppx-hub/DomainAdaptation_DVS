@@ -65,3 +65,14 @@ python main_transfer.py --model Transfer_VGG_SNN --node-type LIFNode --source-da
 python main_transfer.py --model Transfer_VGG_SNN --node-type LIFNode --source-dataset CALTECH101 --target-dataset NCALTECH101 --step 10 --batch-size 120 --act-fun QGateGrad --device 5 --seed 42 --num-classes 101 --traindata-ratio 1.0 --domain-loss --semantic-loss --semantic-loss-coefficient 0.001 --TET-loss-first --TET-loss-second&
 ```
 
+
+
+
+
+## TET Results
+
+| Dataset  | Model     | Node-Type | Step | Act-Fun     | TET Loss None | TET Loss First Only | TET Loss ALL |
+| -------- | --------- | --------- | ---- | ----------- | ------------- | ------------------- | ------------ |
+| *Dvsc10* | *VGG_SNN* | *LIFNode* | *10* | *QGateGrad* | 81.3%         | 82.4%               | 82.9%        |
+|          |           |           |      |             |               |                     |              |
+

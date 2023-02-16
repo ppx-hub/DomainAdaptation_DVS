@@ -49,17 +49,17 @@ if __name__ == '__main__':
     plt.rcParams['font.family'] = 'DejaVu Sans'
     plt.rcParams['font.size'] = 16
     fig, ax = plt.subplots(figsize=(10, 6))
-
-    dataset = 'dvsc10'  # [dvsc10, NCALTECH101, omniglot]
+    dataset = 'NCALTECH101'  # [dvsc10, NCALTECH101, omniglot]
+    ax1 = ax.inset_axes([0.3, 0.3, 0.5, 0.4])
     ANN_VIS = False
 
     if dataset != 'omniglot':
         seed_list = [42, 47, 1024]
-        legend_list = ['baseline', "w/. domain loss + semantic loss", "w/. domain loss + semantic loss + ls"]
+        legend_list = ['baseline', "w/. domain loss + semantic loss", "w/. domain loss + semantic loss + tet"]
         baseline_root = '/home/hexiang/TransferLearning_For_DVS/Results_new_refined/Baseline/'
         trainresults_root = '/home/hexiang/TransferLearning_For_DVS/Results_new_refined/train_TCKA_test/'
 
-        show_epoch = 450
+        show_epoch = 0
         for i in range(3):
             epoch_lists = []
             acc_lists = []
@@ -91,13 +91,13 @@ if __name__ == '__main__':
                 for seed in seed_list:
                     if dataset == 'dvsc10':
                         file = os.path.join(trainresults_root,
-                                            'Transfer_VGG_SNN-dvsc10-10-bs_120-seed_{}-DA_True-ls_0.1-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient1.0-traindataratio_1.0-lossafter_False/summary.csv'.format(
+                                            'Transfer_VGG_SNN-dvsc10-10-bs_120-seed_{}-DA_True-ls_0.0-SNR_0-domainLoss_True-semanticLoss_True-domainLoss_coefficient1.0-semanticLoss_coefficient1.0-traindataratio_1.0-TETfirst_True-TETsecond_True/summary.csv'.format(
                                                 seed))
                     else:
                         if seed == 1024:
                             break
                         file = os.path.join(trainresults_root,
-                                            'Transfer_VGG_SNN-NCALTECH101-10-bs_120-seed_{}-DA_False-ls_0.1-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient0.001-traindataratio_1.0-lossafter_False/summary.csv'.format(
+                                            'Transfer_VGG_SNN-NCALTECH101-10-bs_120-seed_{}-DA_False-ls_0.0-SNR_0-domainLoss_True-semanticLoss_True-domainLoss_coefficient1.0-semanticLoss_coefficient0.001-traindataratio_1.0-TETfirst_True-TETsecond_True/summary.csv'.format(
                                                 seed))
                     epoch_list, acc_list = extract_csv(file, type='transfer')
                     epoch_lists.append(epoch_list)
@@ -110,12 +110,14 @@ if __name__ == '__main__':
             print("for {}, acc max:{}, acc max mean:{} acc var:{}".format(legend_list[i], acc_mean, acc_mean.mean(), acc_std))
             # print("acc list:{}".format(np.max(np.array(acc_lists), axis=1)))
 
-            epoch_lists = np.array(epoch_lists).mean(0)[show_epoch:]
-            acc_lists_mean = np.array(acc_lists).mean(0)[show_epoch:]
-            acc_lists_std = np.array(acc_lists).std(0)[show_epoch:]
+            acc_lists_mean_total = np.array(acc_lists).mean(0)[show_epoch:]
+            acc_lists_std_total = np.array(acc_lists).std(0)[show_epoch:]
 
-            ax.plot(range(1, len(acc_lists_mean) + 1), acc_lists_mean, linewidth=2, label=legend_list[i])
-            ax.fill_between(range(1, len(acc_lists_mean) + 1), (acc_lists_mean - 1 * acc_lists_std), (acc_lists_mean + 1 * acc_lists_std), alpha=.3)
+            ax.plot(range(1, len(acc_lists_mean_total) + 1), acc_lists_mean_total, linewidth=2, label=legend_list[i])
+            ax.fill_between(range(1, len(acc_lists_mean_total) + 1), (acc_lists_mean_total - 1 * acc_lists_std_total), (acc_lists_mean_total + 1 * acc_lists_std_total), alpha=.3)
+            # plot small figure
+            ax1.plot(range(1, len(acc_lists_mean_total) + 1), acc_lists_mean_total, linewidth=2, label=legend_list[i])
+            ax1.fill_between(range(1, len(acc_lists_mean_total) + 1), (acc_lists_mean_total - 1 * acc_lists_std_total), (acc_lists_mean_total + 1 * acc_lists_std_total), alpha=.3)
     else:
         seed_list = [42, 47, 52]
         legend_list = ['baseline', "w/. domain loss + semantic loss"]
@@ -157,6 +159,9 @@ if __name__ == '__main__':
             ax.fill_between(range(1, len(acc_lists_mean) + 1), (acc_lists_mean - 1 * acc_lists_std),
                             (acc_lists_mean + 1 * acc_lists_std), alpha=.3)
 
+    ax1.set_xlim(450, 600)
+    ax1.set_ylim(78, 85)
+    ax.indicate_inset_zoom(ax1)
     ax.legend(bbox_to_anchor=(1, 0), loc=4, borderaxespad=0)
     plt.xlabel('Training epochs in {}'.format(dataset), fontsize=20)
     plt.ylabel('Accuracy (Test set)', fontsize=20)
