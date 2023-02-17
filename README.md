@@ -40,7 +40,7 @@ python main_transfer.py --model Transfer_VGG_SNN --node-type LIFNode --source-da
 2. NCALTECH101
 
 ```shell
-python main_transfer.py --model Transfer_VGG_SNN --node-type LIFNode --source-dataset CALTECH101 --target-dataset NCALTECH101 --step 10 --batch-size 120 --act-fun QGateGrad --device 2 --seed 47 --num-classes 101 --traindata-ratio 1.0 --domain-loss --semantic-loss --semantic-loss-coefficient 0.001
+python main_transfer.py --model Transfer_VGG_SNN --node-type LIFNode --source-dataset CALTECH101 --target-dataset NCALTECH101 --step 10 --batch-size 120 --act-fun QGateGrad --device 2 --seed 47 --num-classes 101 --traindata-ratio 1.0 --smoothing 0.0 --domain-loss --semantic-loss --semantic-loss-coefficient 0.001
 ```
 
 3. omniglot

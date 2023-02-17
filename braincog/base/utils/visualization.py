@@ -135,6 +135,7 @@ def plot_tsne(x, colors,output_dir="", num_classes=None):
     # plt.grid('off')
 
     plt.savefig(output_dir, facecolor=fig.get_facecolor(), bbox_inches='tight')
+    # print("output_dir:{}".format(output_dir))
     #plt.show()
 
 

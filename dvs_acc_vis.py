@@ -49,13 +49,14 @@ if __name__ == '__main__':
     plt.rcParams['font.family'] = 'DejaVu Sans'
     plt.rcParams['font.size'] = 16
     fig, ax = plt.subplots(figsize=(10, 6))
-    dataset = 'NCALTECH101'  # [dvsc10, NCALTECH101, omniglot]
-    ax1 = ax.inset_axes([0.3, 0.3, 0.5, 0.4])
+    dataset = 'dvsc10'  # [dvsc10, NCALTECH101, omniglot]
+    traindataratio = '1.0'
+    ax1 = ax.inset_axes([0.33, 0.27, 0.5, 0.37])
     ANN_VIS = False
 
     if dataset != 'omniglot':
         seed_list = [42, 47, 1024]
-        legend_list = ['baseline', "w/. domain loss + semantic loss", "w/. domain loss + semantic loss + tet"]
+        legend_list = ['baseline', "w/. domain loss", "w/. domain loss + semantic loss"]
         baseline_root = '/home/hexiang/TransferLearning_For_DVS/Results_new_refined/Baseline/'
         trainresults_root = '/home/hexiang/TransferLearning_For_DVS/Results_new_refined/train_TCKA_test/'
 
@@ -66,7 +67,7 @@ if __name__ == '__main__':
             if i == 0:
                 for seed in seed_list:
                     if dataset == 'dvsc10':
-                        file = os.path.join(baseline_root, 'VGG_SNN-dvsc10-10-seed_{}-bs_120-DA_True-ls_0.0-traindataratio_1.0/summary.csv'.format(seed))
+                        file = os.path.join(baseline_root, 'VGG_SNN-dvsc10-10-seed_{}-bs_120-DA_True-ls_0.0-traindataratio_{}/summary.csv'.format(seed, traindataratio))
                     else:
                         break
                         # file = os.path.join(baseline_root, 'VGG_SNN-NCALTECH101-10-seed_{}-bs_120-DA_False-ls_0.0-traindataratio_1.0/summary.csv'.format(seed))
@@ -77,8 +78,8 @@ if __name__ == '__main__':
                 for seed in seed_list:
                     if dataset == 'dvsc10':
                         file = os.path.join(trainresults_root,
-                                            'Transfer_VGG_SNN-dvsc10-10-bs_120-seed_{}-DA_True-ls_0.0-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient1.0-traindataratio_1.0-lossafter_False/summary.csv'.format(
-                                                seed))
+                                            'Transfer_VGG_SNN-dvsc10-10-bs_120-seed_{}-DA_True-ls_0.0-SNR_0-domainLoss_True-semanticLoss_False-domain_loss_coefficient1.0-semantic_loss_coefficient1.0-traindataratio_{}-lossafter_False/summary.csv'.format(
+                                                seed, traindataratio))
                     else:
                         file = os.path.join(trainresults_root,
                                             'Transfer_VGG_SNN-NCALTECH101-10-bs_120-seed_{}-DA_False-ls_0.0-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient0.001-traindataratio_1.0-lossafter_False/summary.csv'.format(
@@ -91,8 +92,8 @@ if __name__ == '__main__':
                 for seed in seed_list:
                     if dataset == 'dvsc10':
                         file = os.path.join(trainresults_root,
-                                            'Transfer_VGG_SNN-dvsc10-10-bs_120-seed_{}-DA_True-ls_0.0-SNR_0-domainLoss_True-semanticLoss_True-domainLoss_coefficient1.0-semanticLoss_coefficient1.0-traindataratio_1.0-TETfirst_True-TETsecond_True/summary.csv'.format(
-                                                seed))
+                                            'Transfer_VGG_SNN-dvsc10-10-bs_120-seed_{}-DA_True-ls_0.0-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient1.0-traindataratio_{}-lossafter_False/summary.csv'.format(
+                                                seed, traindataratio))
                     else:
                         if seed == 1024:
                             break
@@ -160,7 +161,10 @@ if __name__ == '__main__':
                             (acc_lists_mean + 1 * acc_lists_std), alpha=.3)
 
     ax1.set_xlim(450, 600)
-    ax1.set_ylim(78, 85)
+    if traindataratio == '0.1':
+        ax1.set_ylim(52, 65)
+    else:
+        ax1.set_ylim(78.5, 82.9)
     ax.indicate_inset_zoom(ax1)
     ax.legend(bbox_to_anchor=(1, 0), loc=4, borderaxespad=0)
     plt.xlabel('Training epochs in {}'.format(dataset), fontsize=20)

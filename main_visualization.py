@@ -254,7 +254,7 @@ parser.add_argument('--pin-mem', action='store_true', default=False,
                     help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
 parser.add_argument('--no-prefetcher', action='store_true', default=False,
                     help='disable fast prefetcher')
-parser.add_argument('--output', default='/home/hexiang/TransferLearning_For_DVS/Results_new_refined/', type=str, metavar='PATH',
+parser.add_argument('--output', default='/home/hexiang/TransferLearning_For_DVS/Results_new_compare/', type=str, metavar='PATH',
                     help='path to output folder (default: none, current dir)')
 parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_METRIC',
                     help='Best metric (default: "top1"')
@@ -733,8 +733,8 @@ def main():
             output_img, output_label = torch.stack(output_img), torch.stack(output_label)
             Total_len = len(target_loader_eval) * args.batch_size
             output_img, output_label = output_img.reshape(Total_len, -1), output_label.reshape(Total_len,)
-            plot_tsne(output_img, output_label, output_dir=os.path.join(args.output_dir, "vis2d_dvsc10_twoloss.jpg"))
-            plot_tsne_3d(output_img, output_label, output_dir=os.path.join(args.output_dir, "vis3d_dvsc10_twoloss.jpg"))
+            plot_tsne(output_img, output_label, output_dir=os.path.join(args.output_dir, "vis2d_dvsc10_base.jpg"))
+            plot_tsne_3d(output_img, output_label, output_dir=os.path.join(args.output_dir, "vis3d_dvsc10_base.jpg"))
 
 
         #     output_img = []

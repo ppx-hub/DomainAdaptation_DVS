@@ -435,15 +435,7 @@ def main():
     # args.device = 'cuda:0'
     args.world_size = 1
     args.rank = 0  # global rank
-    if args.distributed:
-        args.num_gpu = 1
-        args.device = 'cuda:%d' % args.local_rank
-        torch.cuda.set_device(args.local_rank)
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
-        args.world_size = torch.distributed.get_world_size()
-        args.rank = torch.distributed.get_rank()
-    else:
-        torch.cuda.set_device('cuda:%d' % args.device)
+
     assert args.rank >= 0
 
     if args.distributed:
@@ -493,131 +485,6 @@ def main():
         _logger.info('Model %s created, param count: %d' %
                      (args.model, sum([m.numel() for m in model.parameters()])))
 
-
-    num_aug_splits = 0
-    if args.aug_splits > 0:
-        assert args.aug_splits > 1, 'A split of 1 makes no sense'
-        num_aug_splits = args.aug_splits
-
-    if args.split_bn:
-        assert num_aug_splits > 1 or args.resplit
-        model = convert_splitbn_model(model, max(num_aug_splits, 2))
-
-    use_amp = None
-    if args.amp:
-        # for backwards compat, `--amp` arg tries apex before native amp
-        if has_apex:
-            args.apex_amp = True
-        elif has_native_amp:
-            args.native_amp = True
-    if args.apex_amp and has_apex:
-        use_amp = 'apex'
-    elif args.native_amp and has_native_amp:
-        use_amp = 'native'
-    elif args.apex_amp or args.native_amp:
-        _logger.warning("Neither APEX or native Torch AMP is available, using float32. "
-                        "Install NVIDA apex or upgrade to PyTorch 1.6")
-
-    if args.num_gpu > 1:
-        if use_amp == 'apex':
-            _logger.warning(
-                'Apex AMP does not work well with nn.DataParallel, disabling. Use DDP or Torch AMP.')
-            use_amp = None
-        model = nn.DataParallel(model, device_ids=list(range(args.num_gpu))).cuda()
-        assert not args.channels_last, "Channels last not supported with DP, use DDP."
-    else:
-        model = model.cuda()
-        if args.channels_last:
-            model = model.to(memory_format=torch.channels_last)
-
-    optimizer = create_optimizer(args, model)
-
-    amp_autocast = suppress  # do nothing
-    loss_scaler = None
-    if use_amp == 'apex':
-        model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
-        loss_scaler = ApexScaler()
-        if args.local_rank == 0:
-            _logger.info('Using NVIDIA APEX AMP. Training in mixed precision.')
-    elif use_amp == 'native':
-        amp_autocast = torch.cuda.amp.autocast
-        loss_scaler = NativeScaler()
-        if args.local_rank == 0:
-            _logger.info('Using native Torch AMP. Training in mixed precision.')
-    else:
-        if args.local_rank == 0:
-            _logger.info('AMP not enabled. Training in float32.')
-
-    # optionally resume from a checkpoint
-    resume_epoch = None
-    if args.resume and args.eval_checkpoint == '':
-        args.eval_checkpoint = args.resume
-    if args.resume:
-        args.eval = True
-        resume_epoch = resume_checkpoint(
-            model, args.resume,
-            optimizer=None if args.no_resume_opt else optimizer,
-            loss_scaler=None if args.no_resume_opt else loss_scaler,
-            log_info=args.local_rank == 0)
-
-    if args.critical_loss or args.spike_rate:
-        model.set_requires_fp(True)
-
-    model_ema = None
-    if args.model_ema:
-        # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
-        model_ema = ModelEma(
-            model,
-            decay=args.model_ema_decay,
-            device='cpu' if args.model_ema_force_cpu else '',
-            resume=args.resume)
-
-    if args.node_resume:
-        ckpt = torch.load(args.node_resume, map_location='cpu')
-        model.load_node_weight(ckpt, args.node_trainable)
-
-    model_without_ddp = model
-    if args.distributed:
-        if args.sync_bn:
-            assert not args.split_bn
-            try:
-                if has_apex and use_amp != 'native':
-                    # Apex SyncBN preferred unless native amp is activated
-                    model = convert_syncbn_model(model)
-                else:
-                    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-                if args.local_rank == 0:
-                    _logger.info(
-                        'Converted model to use Synchronized BatchNorm. WARNING: You may have issues if using '
-                        'zero initialized BN layers (enabled by default for ResNets) while sync-bn enabled.')
-            except Exception as e:
-                _logger.error('Failed to enable Synchronized BatchNorm. Install Apex or Torch >= 1.1')
-        if has_apex and use_amp != 'native':
-            # Apex DDP preferred unless native amp is activated
-            if args.local_rank == 0:
-                _logger.info("Using NVIDIA APEX DistributedDataParallel.")
-            model = ApexDDP(model, delay_allreduce=True)
-        else:
-            if args.local_rank == 0:
-                _logger.info("Using native Torch DistributedDataParallel.")
-            model = NativeDDP(model, device_ids=[args.local_rank],
-                              find_unused_parameters=True)  # can use device str in Torch >= 1.1
-        model_without_ddp = model.module
-    # NOTE: EMA model does not need to be wrapped by DDP
-
-    lr_scheduler, num_epochs = create_scheduler(args, optimizer)
-    start_epoch = 0
-    if args.start_epoch is not None:
-        # a specified start_epoch will always override the resume epoch
-        start_epoch = args.start_epoch
-    elif resume_epoch is not None:
-        start_epoch = resume_epoch
-    if lr_scheduler is not None and start_epoch > 0:
-        lr_scheduler.step(start_epoch)
-
-    if args.local_rank == 0:
-        _logger.info('Scheduled epochs: {}'.format(num_epochs))
-
     # now config only for imnet
     data_config = resolve_data_config(vars(args), model=model, verbose=False)
     source_loader_train, _, _, _ = eval('get_transfer_%s_data' % args.source_dataset)(
@@ -626,7 +493,6 @@ def main():
         args=args,
         _logge=_logger,
         data_config=data_config,
-        num_aug_splits=num_aug_splits,
         size=args.event_size,
         mix_up=args.mix_up,
         cut_mix=args.cut_mix,
@@ -652,7 +518,6 @@ def main():
         args=args,
         _logge=_logger,
         data_config=data_config,
-        num_aug_splits=num_aug_splits,
         size=args.event_size,
         mix_up=args.mix_up,
         cut_mix=args.cut_mix,
@@ -675,9 +540,6 @@ def main():
         data_type="frequency"
     )
 
-
-    train_loss_fn = nn.CrossEntropyLoss().cuda()
-
     if args.eval:  # evaluate the model
         if args.distributed:
             state_dict = torch.load(args.eval_checkpoint)['state_dict_ema']
@@ -693,9 +555,10 @@ def main():
         # --------------------------------------------------------------------------
         # Show Acc
         # --------------------------------------------------------------------------
-        for i in range(1):
-            _, val_acc = validate(model, target_loader_train, train_loss_fn, args)
-            print(f"Top-1 accuracy of the model is: {val_acc:.2f}%")
+        print("load model finished!")
+        # for i in range(1):
+        #     _, val_acc = validate(model, target_loader_train, train_loss_fn, args)
+        #     print(f"Top-1 accuracy of the model is: {val_acc:.2f}%")
 
         # --------------------------------------------------------------------------
         # Environment setup
@@ -705,6 +568,14 @@ def main():
             rank, nproc = comm.Get_rank(), comm.Get_size()
         else:
             comm, rank, nproc = None, 0, 1
+
+        if True:
+            if not torch.cuda.is_available():
+                raise Exception('User selected cuda option, but cuda is not available on this machine')
+            gpu_count = torch.cuda.device_count()
+            torch.cuda.set_device(rank % gpu_count)
+            print('Rank %d use GPU %d of %d GPUs on %s' %
+                  (rank, torch.cuda.current_device(), gpu_count, socket.gethostname()))
 
         # --------------------------------------------------------------------------
         # Check plotting resolution

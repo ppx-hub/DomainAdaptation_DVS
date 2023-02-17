@@ -416,8 +416,8 @@ def main():
             "SNR_{}".format(args.snr),
             "domainLoss_{}".format(args.domain_loss),
             "semanticLoss_{}".format(args.semantic_loss),
-            "domainLoss_coefficient{}".format(args.domain_loss_coefficient),
-            "semanticLoss_coefficient{}".format(args.semantic_loss_coefficient),
+            "domain_loss_coefficient{}".format(args.domain_loss_coefficient),
+            "semantic_loss_coefficient{}".format(args.semantic_loss_coefficient),
             "traindataratio_{}".format(args.traindata_ratio),
             "TETfirst_{}".format(args.TET_loss_first),
             "TETsecond_{}".format(args.TET_loss_second),
@@ -831,6 +831,9 @@ def main():
                 # save proper checkpoint with eval metric
                 save_metric = eval_metrics[eval_metric]
                 best_metric, best_epoch = saver.save_checkpoint(epoch, metric=save_metric)
+
+            if epoch == 299:  # 临时的
+                break
 
     except KeyboardInterrupt:
         pass
