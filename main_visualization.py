@@ -7,6 +7,7 @@
 
 import argparse
 import math
+import sys
 import time
 import CKA
 import numpy
@@ -716,7 +717,12 @@ def main():
 
             model.load_state_dict(new_state_dict)
         else:
-            model.load_state_dict(torch.load(args.eval_checkpoint)['state_dict'])
+            model.load_state_dict(torch.load(args.eval_checkpoint)['state_dict'], strict=True)
+            from main_transfer import validate
+            metric = validate(0, model, target_loader_eval, validate_loss_fn, args)
+            print("acc:{}".format(metric['top1']))
+            sys.exit()
+
             output_img = []
             output_label = []
             with torch.no_grad():

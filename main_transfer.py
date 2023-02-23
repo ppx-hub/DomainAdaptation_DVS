@@ -254,7 +254,7 @@ parser.add_argument('--pin-mem', action='store_true', default=False,
                     help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
 parser.add_argument('--no-prefetcher', action='store_true', default=False,
                     help='disable fast prefetcher')
-parser.add_argument('--output', default='/home/hexiang/TransferLearning_For_DVS/Results_new_refined/', type=str, metavar='PATH',
+parser.add_argument('--output', default='/home/hexiang/TransferLearning_For_DVS/Results_lastest/', type=str, metavar='PATH',
                     help='path to output folder (default: none, current dir)')
 parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_METRIC',
                     help='Best metric (default: "top1"')
@@ -413,6 +413,7 @@ def main():
             "seed_{}".format(args.seed),
             "DA_{}".format(args.DVS_DA),
             "ls_{}".format(args.smoothing),
+            "lr_{}".format(args.lr),
             "SNR_{}".format(args.snr),
             "domainLoss_{}".format(args.domain_loss),
             "semanticLoss_{}".format(args.semantic_loss),
@@ -832,8 +833,8 @@ def main():
                 save_metric = eval_metrics[eval_metric]
                 best_metric, best_epoch = saver.save_checkpoint(epoch, metric=save_metric)
 
-            if epoch == 299:  # 临时的
-                break
+            # if epoch == 299:  # 临时的
+            #     break
 
     except KeyboardInterrupt:
         pass
@@ -986,8 +987,10 @@ def train_epoch(
             semantic_loss /= len(domain_rbg_list)
             if args.target_dataset == "dvsc10":
                 m = 0.1
-            else:
+            elif args.target_dataset == "NCALTECH101":
                 m = 0.3
+            else:
+                m = 0.2
             if semantic_loss.item() - m < 0:
                 semantic_loss = torch.tensor(0., device=semantic_loss.device)
 

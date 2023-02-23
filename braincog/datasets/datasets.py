@@ -371,6 +371,30 @@ def get_cifar100_data(batch_size, num_workers=8, same_data=False, *args, **kwarg
     return train_loader, test_loader, False, None
 
 
+def get_origin_cifar10_data(batch_size, num_workers=8, same_da=False, **kwargs):
+    use_hsv = False
+    train_datasets, _ = build_dataset(True, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
+    test_datasets, _ = build_dataset(False, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
+
+    concat_dataset = ConcatDataset([train_datasets, test_datasets])  # concat dataset
+
+    img_index = [[] for i in range(10)]
+    label_index = [0] * 60000
+    for idx, (img, label) in enumerate(concat_dataset):
+        img_index[label].append(img)
+    for i in range(10):
+        img_index[i] = torch.stack(img_index[i], 0)
+        label_index[i * 6000:2 * i * 6000] = [i] * 6000
+    source_datasets = Transfer_DataSet(data=rearrange(torch.stack(img_index, dim=0), 'l b c w h -> (l b) c w h'),
+                                       label=label_index)
+
+    source_loader = torch.utils.data.DataLoader(
+        source_datasets, batch_size=60000,
+        sampler=TransferSampler(torch.arange(0, 60000).tolist()),
+        pin_memory=True, drop_last=False, num_workers=16
+    )
+    return source_loader, None, None, None
+
 def get_transfer_cifar10_data(batch_size, num_workers=8, same_da=False, **kwargs):
     use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
     train_datasets, _ = build_dataset(True, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
@@ -731,8 +755,8 @@ def get_dvsc10_data(batch_size, step, dvs_da=False, **kwargs):
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=batch_size,
         sampler=torch.utils.data.sampler.SubsetRandomSampler(indices_train),
-        pin_memory=True, drop_last=True, num_workers=8
-    )
+        pin_memory=True, drop_last=False, num_workers=8
+    )  # drop_last应该为True
 
     test_loader = torch.utils.data.DataLoader(
         test_dataset, batch_size=batch_size,
@@ -1271,10 +1295,7 @@ def get_esimnet_data(batch_size, step, **kwargs):
 
     reconstruct = kwargs["reconstruct"] if "reconstruct" in kwargs else False
 
-    train_transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15)
-    ])
+    train_transform = None
     test_transform = transforms.Compose([
         lambda x: dvs_channel_check_expend(x),
     ])

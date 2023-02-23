@@ -241,7 +241,7 @@ parser.add_argument('--pin-mem', action='store_true', default=False,
                     help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
 parser.add_argument('--no-prefetcher', action='store_true', default=False,
                     help='disable fast prefetcher')
-parser.add_argument('--output', default='/home/hexiang/TransferLearning_For_DVS/Results_new_refined/', type=str, metavar='PATH',
+parser.add_argument('--output', default='/home/hexiang/TransferLearning_For_DVS/Results_lastest/', type=str, metavar='PATH',
                     help='path to output folder (default: none, current dir)')
 parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_METRIC',
                     help='Best metric (default: "top1"')
@@ -382,6 +382,7 @@ def main():
             "bs_{}".format(args.batch_size),
             "DA_{}".format(args.DVS_DA),
             "ls_{}".format(args.smoothing),
+            "lr_{}".format(args.lr),
             "traindataratio_{}".format(args.traindata_ratio),
             "TET_first_{}".format(args.TET_loss_first),
             "TET_second_{}".format(args.TET_loss_second),
@@ -726,8 +727,8 @@ def main():
                 save_metric = eval_metrics[eval_metric]
                 best_metric, best_epoch = saver.save_checkpoint(epoch, metric=save_metric)
 
-            if epoch == 299:  # 临时的
-                break
+            # if epoch == 299:  # 临时的
+            #     break
 
     except KeyboardInterrupt:
         pass

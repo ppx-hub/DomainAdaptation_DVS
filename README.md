@@ -71,8 +71,28 @@ python main_transfer.py --model Transfer_VGG_SNN --node-type LIFNode --source-da
 
 ## TET Results
 
-| Dataset  | Model     | Node-Type | Step | Act-Fun     | TET Loss None | TET Loss First Only | TET Loss ALL |
-| -------- | --------- | --------- | ---- | ----------- | ------------- | ------------------- | ------------ |
-| *Dvsc10* | *VGG_SNN* | *LIFNode* | *10* | *QGateGrad* | 81.3%         | 82.4%               | 82.9%        |
-|          |           |           |      |             |               |                     |              |
+| Dataset       | Model     | Node-Type | Step | Act-Fun     | Label Smoothing | TET Loss None | TET Loss First Only | TET Loss ALL |
+| ------------- | --------- | --------- | ---- | ----------- | --------------- | ------------- | ------------------- | ------------ |
+| *Dvsc10*      | *VGG_SNN* | *LIFNode* | *10* | *QGateGrad* | *None*          | 81.3%         | 82.4%               | 82.9%        |
+| *NCALTECH101* | *VGG_SNN* | *LIFNode* | *10* | *QGateGrad* | *None*          | 76.2%         | 78.4%               | 80.8%        |
+
+
+
+# Visualization Loss-landscape
+
+```shell
+HDF5_USE_FILE_LOCKING="FALSE" mpirun -n 4 -mca btl ^openib python main_visual_losslandscape.py --model VGG_SNN --node-type LIFNode --source-dataset cifar10 --target-dataset dvsc10 --step 10 --batch-size 1000 --eval --eval_checkpoint /home/hexiang/TransferLearning_For_DVS/Resultes_new_compare/Baseline/VGG_SNN-dvsc10-10-seed_42-bs_120-DA_True-ls_0.0-traindataratio_0.1-TET_first_False-TET_second_False/last.pth.tar --mpi --x=-1.0:1.0:51 --y=-1.0:1.0:51 --dir_type weights --xnorm filter --xignore biasbn --ynorm filter --yignore biasbn --plot --DVS-DA --smoothing 0.0 --output /home/hexiang/TransferLearning_For_DVS/Resultes_new_compare/ --traindata-ratio 0.1
+```
+
+
+
+```shell
+python main_visual_losslandscape.py --model Transfer_VGG_SNN --node-type LIFNode --source-dataset CALTECH101 --target-dataset NCALTECH101 --step 10 --batch-size 500 --eval --eval_checkpoint /home/hexiang/TransferLearning_For_DVS/Results_new_compare/train_TCKA_test/Transfer_VGG_SNN-NCALTECH101-10-bs_120-seed_47-DA_False-ls_0.0-lr_0.005-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient0.001-traindataratio_0.1-TETfirst_True-TETsecond_True/last.pth.tar --mpi --x=-1.0:1.0:51 --y=-1.0:1.0:51 --dir_type weights --xnorm filter --xignore biasbn --ynorm filter --yignore biasbn --plot --smoothing 0.0 --output /home/hexiang/TransferLearning_For_DVS/Results_new_compare/ --traindata-ratio 0.1 --num-classes 101 --device 5&
+
+python main_visual_losslandscape.py --model VGG_SNN --node-type LIFNode --source-dataset CALTECH101 --target-dataset NCALTECH101 --step 10 --batch-size 500 --eval --eval_checkpoint /home/hexiang/TransferLearning_For_DVS/Results_new_compare/Baseline/VGG_SNN-NCALTECH101-10-seed_47-bs_120-DA_False-ls_0.0-lr_0.005-traindataratio_0.1-TET_first_True-TET_second_True/last.pth.tar --mpi --x=-1.0:1.0:51 --y=-1.0:1.0:51 --dir_type weights --xnorm filter --xignore biasbn --ynorm filter --yignore biasbn --plot --smoothing 0.0 --output /home/hexiang/TransferLearning_For_DVS/Results_new_compare/ --traindata-ratio 0.1 --num-classes 101 --device 5&
+
+python main_visual_losslandscape.py --model Transfer_VGG_SNN --node-type LIFNode --source-dataset cifar10 --target-dataset dvsc10 --step 10 --batch-size 1000 --eval --eval_checkpoint /home/hexiang/TransferLearning_For_DVS/Results_new_compare/train_TCKA_test/Transfer_VGG_SNN-dvsc10-10-bs_120-seed_47-DA_True-ls_0.0-lr_0.005-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient0.5-traindataratio_0.1-TETfirst_True-TETsecond_True/last.pth.tar --mpi --x=-1.0:1.0:51 --y=-1.0:1.0:51 --dir_type weights --xnorm filter --xignore biasbn --ynorm filter --yignore biasbn --plot --DVS-DA --smoothing 0.0 --output /home/hexiang/TransferLearning_For_DVS/Results_new_compare/ --traindata-ratio 0.1 --device 0&
+
+python main_visual_losslandscape.py --model VGG_SNN --node-type LIFNode --source-dataset cifar10 --target-dataset dvsc10 --step 10 --batch-size 1000 --eval --eval_checkpoint /home/hexiang/TransferLearning_For_DVS/Results_new_compare/Baseline/VGG_SNN-dvsc10-10-seed_47-bs_120-DA_True-ls_0.0-lr_0.005-traindataratio_0.1-TET_first_True-TET_second_True/last.pth.tar --mpi --x=-1.0:1.0:51 --y=-1.0:1.0:51 --dir_type weights --xnorm filter --xignore biasbn --ynorm filter --yignore biasbn --plot --DVS-DA --smoothing 0.0 --output /home/hexiang/TransferLearning_For_DVS/Results_new_compare/ --traindata-ratio 0.1 --device 7&
+```
 

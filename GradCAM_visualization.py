@@ -2,11 +2,12 @@
 # Time : 2023/2/14 11:52
 # Author : Regulus
 # FileName: main_visual_losslandscape.py
-# Explain: 
+# Explain:
 # Software: PyCharm
 
 from loss_landscape.plot_surface import *
 
+from Pytorch_Grad_Cam.cam import *
 
 import argparse
 import math
@@ -44,6 +45,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy, JsdCro
 from timm.optim import create_optimizer
 from timm.scheduler import create_scheduler
 from timm.utils import ApexScaler, NativeScaler
+from copy import deepcopy
 
 torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('train')
@@ -337,50 +339,10 @@ parser.add_argument('--traindata-ratio', default=1.0, type=float,
 parser.add_argument('--snr', default=0, type=int,
                     help='random noise amplitude controled by snr, 0 means no noise')
 
-# --------------------------------------------------------------------------
-# Start the loss-landscape
-# --------------------------------------------------------------------------
-
-parser.add_argument('--mpi', '-m', action='store_true', help='use mpi')
-parser.add_argument('--threads', default=2, type=int, help='number of threads')
-parser.add_argument('--ngpu', type=int, default=1,
-                    help='number of GPUs to use for each rank, useful for data parallel evaluation')
-
-
-# model parameters
-parser.add_argument('--model_folder', default='',
-                    help='the common folder that contains model_file and model_file2')
-parser.add_argument('--model_file', default='', help='path to the trained model file')
-parser.add_argument('--model_file2', default='', help='use (model_file2 - model_file) as the xdirection')
-parser.add_argument('--model_file3', default='', help='use (model_file3 - model_file) as the ydirection')
-parser.add_argument('--loss_name', '-l', default='crossentropy', help='loss functions: crossentropy | mse')
-
-# direction parameters
-parser.add_argument('--dir_file', default='',
-                    help='specify the name of direction file, or the path to an eisting direction file')
-parser.add_argument('--dir_type', default='weights',
-                    help='direction type: weights | states (including BN\'s running_mean/var)')
-parser.add_argument('--x', default='-1:1:51', help='A string with format xmin:x_max:xnum')
-parser.add_argument('--y', default=None, help='A string with format ymin:ymax:ynum')
-parser.add_argument('--xnorm', default='', help='direction normalization: filter | layer | weight')
-parser.add_argument('--ynorm', default='', help='direction normalization: filter | layer | weight')
-parser.add_argument('--xignore', default='', help='ignore bias and BN parameters: biasbn')
-parser.add_argument('--yignore', default='', help='ignore bias and BN parameters: biasbn')
-parser.add_argument('--same_dir', action='store_true', default=False,
-                    help='use the same random direction for both x-axis and y-axis')
-parser.add_argument('--idx', default=0, type=int, help='the index for the repeatness experiment')
-parser.add_argument('--surf_file', default='',
-                    help='customize the name of surface file, could be an existing file.')
-
-# plot parameters
-parser.add_argument('--proj_file', default='', help='the .h5 file contains projected optimization trajectory.')
-parser.add_argument('--loss_max', default=5, type=float, help='Maximum value to show in 1D plot')
-parser.add_argument('--vmax', default=10, type=float, help='Maximum value to map')
-parser.add_argument('--vmin', default=0.1, type=float, help='Miminum value to map')
-parser.add_argument('--vlevel', default=1.0, type=float, help='plot contours every vlevel')
-parser.add_argument('--show', action='store_true', default=False, help='show plotted figures')
-parser.add_argument('--log', action='store_true', default=False, help='use log scale for loss values')
-parser.add_argument('--plot', action='store_true', default=False, help='plot figures after computation')
+parser.add_argument('--aug_smooth', action='store_true',
+                    help='Apply test time augmentation to smooth the CAM')
+parser.add_argument('--eigen_smooth', action='store_true', help='Reduce noise by taking the first principle componenet'
+         'of cam_weights*activations')
 
 try:
     from apex import amp
@@ -422,7 +384,7 @@ def main():
     os.environ["MKL_NUM_THREADS"] = "20"  # 设置MKL-DNN CPU加速库的线程数。
     args, args_text = _parse_args()
     args.no_spike_output = True
-
+    torch.cuda.set_device('cuda:%d' % args.device)
     args.prefetcher = not args.no_prefetcher
     args.distributed = False
     if 'WORLD_SIZE' in os.environ:
@@ -465,7 +427,6 @@ def main():
         temporal_flatten=args.temporal_flatten,
         layer_by_layer=args.layer_by_layer,
         n_groups=args.n_groups,
-        TET_loss=True
     )
 
     if 'dvs' in args.target_dataset:
@@ -512,6 +473,29 @@ def main():
     )
 
 
+    origin_loader_train, _, _, _ = eval('get_origin_%s_data' % args.source_dataset)(
+        batch_size=args.batch_size,
+        step=args.step,
+        args=args,
+        _logge=_logger,
+        data_config=data_config,
+        size=args.event_size,
+        mix_up=args.mix_up,
+        cut_mix=args.cut_mix,
+        event_mix=args.event_mix,
+        beta=args.cutmix_beta,
+        prob=args.cutmix_prob,
+        gaussian_n=args.gaussian_n,
+        num=args.cutmix_num,
+        noise=args.cutmix_noise,
+        num_classes=args.num_classes,
+        rand_aug=args.rand_aug,
+        randaug_n=args.randaug_n,
+        randaug_m=args.randaug_m,
+        portion=args.train_portion,
+        _logger=_logger,
+    )
+
     target_loader_train, target_loader_eval, mixup_active, mixup_fn = eval('get_%s_data' % args.target_dataset)(
         batch_size=args.batch_size,
         dvs_da=args.DVS_DA,
@@ -552,99 +536,100 @@ def main():
 
             model.load_state_dict(new_state_dict)
         else:
-            model.load_state_dict(torch.load(args.eval_checkpoint, map_location=torch.device('cpu'))['state_dict'])
+            model.load_state_dict(torch.load(args.eval_checkpoint, map_location='cpu')['state_dict'])
+            # pass
+            # print("no model load")
         # --------------------------------------------------------------------------
         # Show Acc
         # --------------------------------------------------------------------------
         print("load model finished!")
-        # train_loss_fn = nn.CrossEntropyLoss()
-        # for i in range(1):
-        #     _, val_acc = validate(model, target_loader_train, train_loss_fn, args)
-        #     print(f"Top-1 accuracy of the model is: {val_acc:.2f}%")
 
-        # --------------------------------------------------------------------------
-        # Environment setup
-        # --------------------------------------------------------------------------
-        if args.mpi:
-            comm = mpi.setup_MPI()
-            rank, nproc = comm.Get_rank(), comm.Get_size()
-        else:
-            comm, rank, nproc = None, 0, 1
 
-        if True:
-            if not torch.cuda.is_available():
-                raise Exception('User selected cuda option, but cuda is not available on this machine')
-            gpu_count = torch.cuda.device_count()
-            # torch.cuda.set_device(rank % gpu_count)
-            torch.cuda.set_device("cuda:{}".format(args.device))
-            print('Rank %d use GPU %d of %d GPUs on %s' %
-                  (rank, torch.cuda.current_device(), gpu_count, socket.gethostname()))
+    """ python cam.py -image-path <path_to_image>
+    Example usage of loading an image, and computing:
+        1. CAM
+        2. Guided Back Propagation
+        3. Combining both
+    """
 
-        # --------------------------------------------------------------------------
-        # Check plotting resolution
-        # --------------------------------------------------------------------------
-        try:
-            args.xmin, args.xmax, args.xnum = [float(a) for a in args.x.split(':')]
-            args.ymin, args.ymax, args.ynum = (None, None, None)
-            if args.y:
-                args.ymin, args.ymax, args.ynum = [float(a) for a in args.y.split(':')]
-                assert args.ymin and args.ymax and args.ynum, \
-                    'You specified some arguments for the y axis, but not all'
-        except:
-            raise Exception('Improper format for x- or y-coordinates. Try something like -1:1:51')
+    # Choose the target layer you want to compute the visualization for.
+    # Usually this will be the last convolutional layer in the model.
+    # Some common choices can be:
+    # Resnet18 and 50: model.layer4
+    # VGG, densenet161: model.features[-1]
+    # mnasnet1_0: model.layers[-1]
+    # You can print the model to help chose the layer
+    # You can pass a list with several target layers,
+    # in that case the CAMs will be computed per layer and then aggregated.
+    # You can also try selecting all layers of a certain type, with e.g:
+    # from pytorch_grad_cam.utils.find_layers import find_layer_types_recursive
+    # find_layer_types_recursive(model, [torch.nn.ReLU])
+    target_layers = [model.feature[-1]]
 
-        # --------------------------------------------------------------------------
-        # Load models and extract parameters
-        # --------------------------------------------------------------------------
+    if args.target_dataset == "dvsc10" or args.target_dataset == "NCALTECH101" or args.target_dataset == "nomni":  # ImageNet中回来的loader其实是数据集,在后面处理
+        source_input_list, source_label_list = next(iter(source_loader_train))
+        origin_input_list, origin_label_list = next(iter(origin_loader_train))
 
-        net = model
-        w = net_plotter.get_weights(net)  # initial parameters
-        s = copy.deepcopy(net.state_dict())  # deepcopy since state_dict are references
-        if args.ngpu > 1:
-            # data parallel with multiple GPUs on a single node
-            net = nn.DataParallel(net, device_ids=range(torch.cuda.device_count()))
 
-        # --------------------------------------------------------------------------
-        # Setup the direction file and the surface file
-        # --------------------------------------------------------------------------
-        dir_file = net_plotter.name_direction_file(args)  # name the direction file
-        dir_file = os.path.join(os.path.split(args.eval_checkpoint)[0], dir_file)
-        if rank == 0:
-            net_plotter.setup_direction(args, dir_file, net)
+    for batch_idx, (inputs, label) in enumerate(target_loader_train):
+        # We have to specify the target we want to generate
+        # the Class Activation Maps for.
+        # If targets is None, the highest scoring category (for every member in the batch) will be used.
+        # You can target specific categories by
+        # targets = [e.g ClassifierOutputTarget(281)]
+        sampler_list = label.tolist()
+        if args.target_dataset == "dvsc10" and args.source_dataset == "cifar10":
+            sampler_list = torch.tensor(sampler_list) * 6000 + torch.randint(0, 6000, (len(sampler_list),))
 
-        surf_file = name_surface_file(args, dir_file)
-        if rank == 0:
-            setup_surface_file(args, surf_file, dir_file)
+        source_input, source_label = [], []
+        if args.target_dataset == "dvsc10":
+            source_input, source_label = source_input_list[sampler_list], source_label_list[sampler_list]
+            origin_input, origin_label = origin_input_list[sampler_list], origin_label_list[sampler_list]
 
-        # wait until master has setup the direction file and surface file
-        mpi.barrier(comm)
+        # for i in range(10):
+        #     # vis origin picture
+        #     plt.figure()
+        #     plt.imshow(source_input[i].permute(1, 2, 0))
+        #     plt.title("origin image")
+        #     plt.show()
+        rgb_img = origin_input[0]
 
-        # load directions
-        d = net_plotter.load_directions(dir_file)
-        # calculate the consine similarity of the two directions
-        if len(d) == 2 and rank == 0:
-            similarity = proj.cal_angle(proj.nplist_to_tensor(d[0]), proj.nplist_to_tensor(d[1]))
-            print('cosine similarity between x-axis and y-axis: %f' % similarity)
+        inputs = deepcopy(source_input)
+        inputs = inputs[:, -1, :, :].unsqueeze(1).repeat(1, args.step * 2, 1, 1)
+        inputs = rearrange(inputs, 'b (t c) h w -> b t c h w', t=args.step)
 
-        mpi.barrier(comm)
+        # Using the with statement ensures the context is freed, and you can
+        # recreate different CAM objects in a loop.
+        cam_algorithm = GradCAMPlusPlus
+        inputs = inputs.type(torch.FloatTensor).cuda()
+        model = model.cuda()
+        with cam_algorithm(model=model,
+                           target_layers=target_layers,
+                           use_cuda=False) as cam:
 
-        # --------------------------------------------------------------------------
-        # Start the computation
-        # --------------------------------------------------------------------------
-        trainloader = target_loader_train
-        crunch(surf_file, net, w, s, d, trainloader, 'train_loss', 'train_acc', comm, rank, args)
+            # AblationCAM and ScoreCAM have batched implementations.
+            # You can override the internal batch size for faster computation.
+            cam.batch_size = 32
+            grayscale_cam = cam(input_tensor=inputs,
+                                targets=ClassifierOutputTarget(origin_label[0].item()),
+                                aug_smooth=args.aug_smooth,
+                                eigen_smooth=args.eigen_smooth)
 
-        # --------------------------------------------------------------------------
-        # Plot figures
-        # --------------------------------------------------------------------------
-        if args.plot and rank == 0:
-            if args.y and args.proj_file:
-                plot_2D.plot_contour_trajectory(surf_file, dir_file, args.proj_file, 'train_loss', args.show)
-            elif args.y:
-                plot_2D.plot_2d_contour(surf_file, 'train_loss', args.vmin, args.vmax, args.vlevel, args.show)
-            else:
-                plot_1D.plot_1d_loss_err(surf_file, args.xmin, args.xmax, args.loss_max, args.log, args.show)
-        return
+            # Here grayscale_cam has only one image in the batch
+            grayscale_cam = grayscale_cam[0, :]
+
+            cam_image = show_cam_on_image(rgb_img.permute(1, 2, 0).numpy(), grayscale_cam, use_rgb=True)
+
+            # # cam_image is RGB encoded whereas "cv2.imwrite" requires BGR encoding.
+            rgb_img = cv2.resize(rgb_img.permute(1, 2, 0).numpy(), (32, 32))
+
+        # cv2.imwrite(f'{args.method}_cam.jpg', cam_image)
+        plt.figure()
+        plt.imshow(cam_image)
+        plt.axis('off')
+        plt.savefig('gradcam_pic/plot_id{}.jpg'.format(batch_idx), bbox_inches='tight')
+        if batch_idx == 50:
+            break
 
 
 if __name__ == '__main__':
