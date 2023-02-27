@@ -357,7 +357,9 @@ parser.add_argument('--traindata-ratio', default=1.0, type=float,
 parser.add_argument('--snr', default=0, type=int,
                     help='random noise amplitude controled by snr, 0 means no noise')
 
-
+# margin m
+parser.add_argument('--m', default=-1.0, type=float,
+                    help='margin')
 
 source_input_list, source_label_list = [], []
 CALTECH101_list, ImageNet_list = [], []
@@ -414,7 +416,7 @@ def main():
             "DA_{}".format(args.DVS_DA),
             "ls_{}".format(args.smoothing),
             "lr_{}".format(args.lr),
-            "SNR_{}".format(args.snr),
+            "m_{}".format(args.m),
             "domainLoss_{}".format(args.domain_loss),
             "semanticLoss_{}".format(args.semantic_loss),
             "domain_loss_coefficient{}".format(args.domain_loss_coefficient),
@@ -991,6 +993,8 @@ def train_epoch(
                 m = 0.3
             else:
                 m = 0.2
+            if args.m >= 0.0:
+                m = args.m
             if semantic_loss.item() - m < 0:
                 semantic_loss = torch.tensor(0., device=semantic_loss.device)
 

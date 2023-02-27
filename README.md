@@ -96,3 +96,13 @@ python main_visual_losslandscape.py --model Transfer_VGG_SNN --node-type LIFNode
 python main_visual_losslandscape.py --model VGG_SNN --node-type LIFNode --source-dataset cifar10 --target-dataset dvsc10 --step 10 --batch-size 1000 --eval --eval_checkpoint /home/hexiang/TransferLearning_For_DVS/Results_new_compare/Baseline/VGG_SNN-dvsc10-10-seed_47-bs_120-DA_True-ls_0.0-lr_0.005-traindataratio_0.1-TET_first_True-TET_second_True/last.pth.tar --mpi --x=-1.0:1.0:51 --y=-1.0:1.0:51 --dir_type weights --xnorm filter --xignore biasbn --ynorm filter --yignore biasbn --plot --DVS-DA --smoothing 0.0 --output /home/hexiang/TransferLearning_For_DVS/Results_new_compare/ --traindata-ratio 0.1 --device 7&
 ```
 
+
+
+## Record Id
+
+| CAT      | 131, 152, 94          |      |
+| -------- | --------------------- | ---- |
+| Airplane | 110, 164( ->108), 133 |      |
+| Bird     | 101, 191,151          |      |
+| Dog      | 56, 80, 20            |      |
+

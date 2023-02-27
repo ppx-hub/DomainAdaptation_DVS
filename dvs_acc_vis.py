@@ -49,24 +49,24 @@ if __name__ == '__main__':
     plt.rcParams['font.family'] = 'DejaVu Sans'
     plt.rcParams['font.size'] = 16
     fig, ax = plt.subplots(figsize=(10, 6))
-    dataset = 'dvsc10'  # [dvsc10, NCALTECH101, omniglot]
-    traindataratio = '0.1'
+    dataset = 'NCALTECH101'  # [dvsc10, NCALTECH101, omniglot]
+    traindataratio = '1.0'
     ax1 = ax.inset_axes([0.2, 0.3, 0.28, 0.22])
     ax2 = ax.inset_axes([0.65, 0.3, 0.28, 0.22])
     ANN_VIS = False
 
     if dataset != 'omniglot':
-        # seed_list = [42, 47, 114514]
-        seed_list = [47]
+        # seed_list = [42, 47, 1024, 114514]
+        seed_list = [42, 1024, 114514]
         legend_list = ['baseline', "w/. domain loss", "w/. domain loss + semantic loss"]
         baseline_root = '/home/hexiang/TransferLearning_For_DVS/Results_lastest/Baseline/'
         trainresults_root = '/home/hexiang/TransferLearning_For_DVS/Results_lastest/train_TCKA_test/'
 
         show_epoch = 0
-        for i in range(3):
+        for i in range(1):
             epoch_lists = []
             acc_lists = []
-            if i == 0:
+            if i == 12:
                 for seed in seed_list:
                     if dataset == 'dvsc10':
                         file = os.path.join(baseline_root, 'VGG_SNN-dvsc10-10-seed_{}-bs_120-DA_True-ls_0.0-lr_0.005-traindataratio_{}-TET_first_True-TET_second_True/summary.csv'.format(seed, traindataratio))
@@ -75,7 +75,7 @@ if __name__ == '__main__':
                     epoch_list, acc_list = extract_csv(file, type='main')
                     epoch_lists.append(epoch_list)
                     acc_lists.append(acc_list)
-            elif i == 1:
+            elif i == 9:
                 for seed in seed_list:
                     if dataset == 'dvsc10':
                         file = os.path.join(trainresults_root,
@@ -93,11 +93,11 @@ if __name__ == '__main__':
                 for seed in seed_list:
                     if dataset == 'dvsc10':
                         file = os.path.join(trainresults_root,
-                                            'Transfer_VGG_SNN-dvsc10-10-bs_120-seed_{}-DA_True-ls_0.0-lr_0.005-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient0.5-traindataratio_{}-TETfirst_True-TETsecond_True/summary.csv'.format(
+                                            'Transfer_VGG_SNN-dvsc10-10-bs_120-seed_{}-DA_True-ls_0.1-lr_0.005-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient0.5-traindataratio_{}-TETfirst_True-TETsecond_True/summary.csv'.format(
                                                 seed, traindataratio))
                     else:
                         file = os.path.join(trainresults_root,
-                                            'Transfer_VGG_SNN-NCALTECH101-10-bs_120-seed_{}-DA_False-ls_0.0-lr_0.005-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient0.001-traindataratio_{}-TETfirst_True-TETsecond_True/summary.csv'.format(
+                                            'Transfer_VGG_SNN-NCALTECH101-10-bs_120-seed_{}-DA_False-ls_0.1-lr_0.005-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient0.001-traindataratio_{}-TETfirst_True-TETsecond_True/summary.csv'.format(
                                                 seed, traindataratio))
                     epoch_list, acc_list = extract_csv(file, type='transfer')
                     epoch_lists.append(epoch_list)
@@ -182,4 +182,5 @@ if __name__ == '__main__':
     plt.xlabel('Epochs', fontsize=15)
     plt.ylabel('Test Accuracy (Test set)', fontsize=15)
     plt.gca().yaxis.set_major_formatter(FuncFormatter(to_percent))
-    plt.show()
+    # plt.show()
+    plt.savefig('{}_{}.svg'.format(dataset, traindataratio), dpi=300)

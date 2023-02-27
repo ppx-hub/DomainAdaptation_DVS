@@ -4,6 +4,7 @@
 # FileName: main_visual_losslandscape.py
 # Explain:
 # Software: PyCharm
+import tqdm
 
 from loss_landscape.plot_surface import *
 
@@ -18,6 +19,8 @@ import timm.models
 import random as rd
 import yaml
 import os
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d import proj3d
 import logging
 from collections import OrderedDict
 from contextlib import suppress
@@ -344,6 +347,123 @@ parser.add_argument('--aug_smooth', action='store_true',
 parser.add_argument('--eigen_smooth', action='store_true', help='Reduce noise by taking the first principle componenet'
          'of cam_weights*activations')
 
+import os
+import numpy as np
+import torch
+from torchvision import transforms
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d import proj3d
+from tonic.datasets import NCALTECH101, CIFAR10DVS
+import tonic
+from matplotlib import rcParams
+import seaborn as sns
+
+
+# for matplotlib 3D
+def get_proj(self):
+    """
+     Create the projection matrix from the current viewing position.
+
+     elev stores the elevation angle in the z plane
+     azim stores the azimuth angle in the (x, y) plane
+
+     dist is the distance of the eye viewing point from the object point.
+    """
+    # chosen for similarity with the initial view before gh-8896
+
+    relev, razim = np.pi * self.elev / 180, np.pi * self.azim / 180
+
+    # EDITED TO HAVE SCALED AXIS
+    xmin, xmax = np.divide(self.get_xlim3d(), self.pbaspect[0])
+    ymin, ymax = np.divide(self.get_ylim3d(), self.pbaspect[1])
+    zmin, zmax = np.divide(self.get_zlim3d(), self.pbaspect[2])
+
+    # transform to uniform world coordinates 0-1, 0-1, 0-1
+    worldM = proj3d.world_transformation(xmin, xmax,
+                                         ymin, ymax,
+                                         zmin, zmax)
+
+    # look into the middle of the new coordinates
+    R = self.pbaspect / 2
+
+    xp = R[0] + np.cos(razim) * np.cos(relev) * self.dist
+    yp = R[1] + np.sin(razim) * np.cos(relev) * self.dist
+    zp = R[2] + np.sin(relev) * self.dist
+    E = np.array((xp, yp, zp))
+
+    self.eye = E
+    self.vvec = R - E
+    self.vvec = self.vvec / np.linalg.norm(self.vvec)
+
+    if abs(relev) > np.pi / 2:
+        # upside down
+        V = np.array((0, 0, -1))
+    else:
+        V = np.array((0, 0, 1))
+    zfront, zback = -self.dist, self.dist
+
+    viewM = proj3d.view_transformation(E, R, V)
+    projM = self._projection(zfront, zback)
+    M0 = np.dot(viewM, worldM)
+    M = np.dot(projM, M0)
+    return M
+
+
+def event_vis_raw(x):
+    sns.set_style('whitegrid')
+    # sns.set_palette('deep', desat=.6)
+    sns.set_context("notebook", font_scale=1.5,
+                    rc={"lines.linewidth": 2.5})
+    Axes3D.get_proj = get_proj
+    x = np.array(x.tolist())  # x, y, t, p
+    mask = (x[:, 3] == 1)
+    x_pos = x[mask]
+    x_neg = x[mask == False]
+    pos_idx = np.random.choice(x_pos.shape[0], 10000)
+    neg_idx = np.random.choice(x_neg.shape[0], 10000)
+    # x_pos[pos_idx, 2] = 0
+    # x_neg[neg_idx, 2] = 0
+
+    fig = plt.figure(figsize=plt.figaspect(0.5) * 1.5)
+    ax = Axes3D(fig)
+    ax.pbaspect = np.array([2.0, 1.0, 0.5])
+    ax.view_init(elev=10, azim=-75)
+    # ax.view_init(elev=15, azim=15)
+    ax.set_xlabel('t (time step)')
+    ax.set_ylabel('w (pixel)')
+    ax.set_zlabel('h (pixel)')
+    # ax.set_xticks([])
+    # ax.set_yticks([])
+    # ax.set_zticks([])
+    # ax.scatter(x_pos[pos_idx, 2], 48 - x_pos[pos_idx, 0], 48 - x_pos[pos_idx, 1], color='red', alpha=0.3, s=1.)
+    # ax.scatter(x_neg[neg_idx, 2], 48 - x_neg[neg_idx, 0], 48 - x_neg[neg_idx, 1], color='blue', alpha=0.3, s=1.)
+    ax.scatter(x_pos[:, 0], 48 - x_pos[:, 1] * 0.375, 48 - x_pos[:, 2] * 0.375, color='red', alpha=0.3, s=1.)
+    # ax.scatter(x_neg[:, 0], 64 - x_neg[:, 1] // 2, 128 - x_neg[:, 2], color='blue', alpha=0.3, s=1.)
+    ax.scatter(18000, 48 - x_pos[:, 1] * 0.375, 48 - x_pos[:, 2] * 0.375, color='red', alpha=0.3, s=1.)
+    # ax.scatter(18000, 64 - x_pos[:, 1] // 2, 128 - x_pos[:, 2], color='blue', alpha=0.3, s=1.)
+
+
+def get_dataloader_ncal(step, **kwargs):
+    sensor_size = tonic.datasets.CIFAR10DVS.sensor_size
+    transform = tonic.transforms.Compose([
+        # tonic.transforms.DropPixel(hot_pixel_frequency=.999),
+        # tonic.transforms.Denoise(500),
+        tonic.transforms.DropEvent(p=0.0),
+        # tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step),
+        # lambda x: F.interpolate(torch.tensor(x, dtype=torch.float), size=[48, 48], mode='bilinear', align_corners=True),
+    ])
+    dataset = tonic.datasets.CIFAR10DVS(os.path.join(DATA_DIR, 'DVS/DVS_Cifar10'), transform=transform)
+    # dataset = [dataset[5569], dataset[8196]]
+    # dataset = [dataset[5000], dataset[6000]] # 1958
+    # dataset = [dataset[0]]
+    # loader = torch.utils.data.DataLoader(
+    #     dataset, batch_size=1,
+    #     shuffle=False,
+    #     pin_memory=True, drop_last=True, num_workers=8
+    # )
+    return dataset
+
 try:
     from apex import amp
     from apex.parallel import DistributedDataParallel as ApexDDP
@@ -449,31 +569,31 @@ def main():
 
     # now config only for imnet
     data_config = resolve_data_config(vars(args), model=model, verbose=False)
-    source_loader_train, _, _, _ = eval('get_transfer_%s_data' % args.source_dataset)(
-        batch_size=args.batch_size,
-        step=args.step,
-        args=args,
-        _logge=_logger,
-        data_config=data_config,
-        size=args.event_size,
-        mix_up=args.mix_up,
-        cut_mix=args.cut_mix,
-        event_mix=args.event_mix,
-        beta=args.cutmix_beta,
-        prob=args.cutmix_prob,
-        gaussian_n=args.gaussian_n,
-        num=args.cutmix_num,
-        noise=args.cutmix_noise,
-        num_classes=args.num_classes,
-        rand_aug=args.rand_aug,
-        randaug_n=args.randaug_n,
-        randaug_m=args.randaug_m,
-        portion=args.train_portion,
-        _logger=_logger,
-    )
+    # source_loader_train, _, _, _ = eval('get_transfer_%s_data' % args.source_dataset)(
+    #     batch_size=args.batch_size,
+    #     step=args.step,
+    #     args=args,
+    #     _logge=_logger,
+    #     data_config=data_config,
+    #     size=args.event_size,
+    #     mix_up=args.mix_up,
+    #     cut_mix=args.cut_mix,
+    #     event_mix=args.event_mix,
+    #     beta=args.cutmix_beta,
+    #     prob=args.cutmix_prob,
+    #     gaussian_n=args.gaussian_n,
+    #     num=args.cutmix_num,
+    #     noise=args.cutmix_noise,
+    #     num_classes=args.num_classes,
+    #     rand_aug=args.rand_aug,
+    #     randaug_n=args.randaug_n,
+    #     randaug_m=args.randaug_m,
+    #     portion=args.train_portion,
+    #     _logger=_logger,
+    # )
 
 
-    origin_loader_train, _, _, _ = eval('get_origin_%s_data' % args.source_dataset)(
+    origin_loader_train, _, _, _ = eval('get_origin_dvsc10_data')(
         batch_size=args.batch_size,
         step=args.step,
         args=args,
@@ -566,40 +686,41 @@ def main():
     # find_layer_types_recursive(model, [torch.nn.ReLU])
     target_layers = [model.feature[-1]]
 
-    if args.target_dataset == "dvsc10" or args.target_dataset == "NCALTECH101" or args.target_dataset == "nomni":  # ImageNet中回来的loader其实是数据集,在后面处理
-        source_input_list, source_label_list = next(iter(source_loader_train))
-        origin_input_list, origin_label_list = next(iter(origin_loader_train))
+    # if args.target_dataset == "dvsc10" or args.target_dataset == "NCALTECH101" or args.target_dataset == "nomni":  # ImageNet中回来的loader其实是数据集,在后面处理
+    #     source_input_list, source_label_list = next(iter(source_loader_train))
+        # origin_input_list, origin_label_list = next(iter(origin_loader_train))
 
 
-    for batch_idx, (inputs, label) in enumerate(target_loader_train):
-        # We have to specify the target we want to generate
-        # the Class Activation Maps for.
-        # If targets is None, the highest scoring category (for every member in the batch) will be used.
-        # You can target specific categories by
-        # targets = [e.g ClassifierOutputTarget(281)]
-        sampler_list = label.tolist()
-        if args.target_dataset == "dvsc10" and args.source_dataset == "cifar10":
-            sampler_list = torch.tensor(sampler_list) * 6000 + torch.randint(0, 6000, (len(sampler_list),))
+    # for batch_idx, (target_loader_use, origin_loader_use) in enumerate(zip(target_loader_train, origin_loader_train)):
+    choose_idx = 5002  # 5012, 5002
+    if True:
+        inputs = 0.0
+        label = 0.0
+        for batch_idx, (inputs_tmp, label_tmp) in tqdm.tqdm(enumerate(origin_loader_train)):
+            if batch_idx == choose_idx:
+                inputs = inputs_tmp
+                label = label_tmp
+                break
+            else:
+                continue
 
-        source_input, source_label = [], []
-        if args.target_dataset == "dvsc10":
-            source_input, source_label = source_input_list[sampler_list], source_label_list[sampler_list]
-            origin_input, origin_label = origin_input_list[sampler_list], origin_label_list[sampler_list]
+        plt.figure(figsize=(8, 6))
+        plt.xlabel('w (pixel)')
+        plt.ylabel('h (pixel)')
+        rgb_img = inputs[0]  # (1, 10, 2, 48, 48) -> (10, 2, 48, 48)
+        event_frame_plot_2d(rgb_img)
+        rgb_img = rgb_img[0, 0, :, :].unsqueeze(0).repeat(3, 1, 1) / 255
 
-        # for i in range(10):
-        #     # vis origin picture
-        #     plt.figure()
-        #     plt.imshow(source_input[i].permute(1, 2, 0))
-        #     plt.title("origin image")
-        #     plt.show()
-        rgb_img = origin_input[0]
+        for batch_idx, (inputs_tmp, label_tmp) in tqdm.tqdm(enumerate(target_loader_train)):
+            if batch_idx == choose_idx:
+                inputs = inputs_tmp
+                label = label_tmp
+                break
+            else:
+                continue
 
-        inputs = deepcopy(source_input)
-        inputs = inputs[:, -1, :, :].unsqueeze(1).repeat(1, args.step * 2, 1, 1)
-        inputs = rearrange(inputs, 'b (t c) h w -> b t c h w', t=args.step)
-
-        # Using the with statement ensures the context is freed, and you can
-        # recreate different CAM objects in a loop.
+        #Using the with statement ensures the context is freed, and you can
+        #recreate different CAM objects in a loop.
         cam_algorithm = GradCAMPlusPlus
         inputs = inputs.type(torch.FloatTensor).cuda()
         model = model.cuda()
@@ -610,27 +731,61 @@ def main():
             # AblationCAM and ScoreCAM have batched implementations.
             # You can override the internal batch size for faster computation.
             cam.batch_size = 32
+
+            # grayscale_cam = cam(input_tensor=inputs,
+            #                     targets=[ClassifierOutputTarget(origin_label[0].item())],
+            #                     aug_smooth=args.aug_smooth,
+            #                     eigen_smooth=args.eigen_smooth)
+
             grayscale_cam = cam(input_tensor=inputs,
-                                targets=ClassifierOutputTarget(origin_label[0].item()),
+                                targets=None,
                                 aug_smooth=args.aug_smooth,
                                 eigen_smooth=args.eigen_smooth)
 
             # Here grayscale_cam has only one image in the batch
             grayscale_cam = grayscale_cam[0, :]
 
-            cam_image = show_cam_on_image(rgb_img.permute(1, 2, 0).numpy(), grayscale_cam, use_rgb=True)
-
+            # cam_image = show_cam_on_image(rgb_img.permute(1, 2, 0).numpy(), grayscale_cam, use_rgb=True, image_weight=0.0)
+            cam_image = show_cam_on_image(np.ones((48, 48, 3)), grayscale_cam, use_rgb=True,
+                                          image_weight=0.0)
             # # cam_image is RGB encoded whereas "cv2.imwrite" requires BGR encoding.
-            rgb_img = cv2.resize(rgb_img.permute(1, 2, 0).numpy(), (32, 32))
+        # rgb_img = cv2.resize(rgb_img.permute(1, 2, 0).numpy(), (32, 32))
 
         # cv2.imwrite(f'{args.method}_cam.jpg', cam_image)
-        plt.figure()
-        plt.imshow(cam_image)
-        plt.axis('off')
-        plt.savefig('gradcam_pic/plot_id{}.jpg'.format(batch_idx), bbox_inches='tight')
-        if batch_idx == 50:
-            break
+        plt.ylim(bottom=0.)
+        plt.savefig('plot_before{}.jpg', bbox_inches='tight')
+        plt.imshow(cam_image, alpha=1.0)
+        # plt.show()
+        # plt.axis('off')
+        # plt.show()
+        # plt.savefig('gradcam_pic/plot_id{}.jpg'.format(batch_idx), bbox_inches='tight')
+        plt.savefig('plot_after{}.jpg', bbox_inches='tight')
 
+        # if batch_idx == 500:
+        #     break
+
+
+def event_frame_plot_2d(event):
+
+    for t in range(event.shape[0]):
+        pos_idx = []
+        neg_idx = []
+        for x in range(event.shape[2]):
+            for y in range(event.shape[3]):
+                if event[t, 0, x, y] > 0:
+                    pos_idx.append((x, y, event[t, 0, x, y]))
+                if event[t, 1, x, y] > 0:
+                    neg_idx.append((x, y, event[t, 0, x, y]))
+        if len(pos_idx) > 0:
+            # print(t)
+            pos_x, pos_y, pos_c = np.split(np.array(pos_idx), 3, axis=1)
+            # plt.scatter(48 - pos_x[:, 0] * 0.375, 48 - pos_y[:, 0] * 0.375, c='red', alpha=1, s=1)
+            plt.scatter(pos_x[:, 0] * 0.375, pos_y[:, 0] * 0.375, c='white', alpha=1, s=1)
+        if len(neg_idx) > 0:
+            neg_x, neg_y, neg_c = np.split(np.array(neg_idx), 3, axis=1)
+            # plt.scatter(48 - neg_x[:, 0] * 0.375, 48 - neg_y[:, 0] * 0.375, c='blue', alpha=1, s=1)
+            plt.scatter(neg_x[:, 0] * 0.375, neg_y[:, 0] * 0.375, c='blue', alpha=1, s=1)
+    # plt.show()
 
 if __name__ == '__main__':
     main()

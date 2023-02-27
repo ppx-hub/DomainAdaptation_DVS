@@ -108,48 +108,14 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress):
 
             with amp_autocast():
                 if args.model == "Transfer_VGG_SNN":
-                    _, _, output_rgb, output_dvs = model(inputs, inputs)
-
-                    # compute cls loss
-                    lamb = 1e-3
-                    loss_rgb = 0
-                    tet_loss_first = 0
-                    tet_loss_second = 0
-                    for i in range(len(output_rgb)):
-                        loss_rgb += loss_fn(output_rgb[i], target)
-                        tet_loss_first += loss_fn(output_dvs[i], target)
-                    loss_rgb /= len(output_rgb)
-                    tet_loss_first /= len(output_dvs)
-
-                    # second term
-                    y = torch.zeros_like(output_dvs[-1]).fill_(args.threshold)
-                    secondLoss = torch.nn.MSELoss()
-                    tet_loss_second = secondLoss(output_dvs[-1], y)
-
-                    loss_dvs = (1 - lamb) * tet_loss_first + lamb * tet_loss_second
-                    loss = 0 * loss_rgb + loss_dvs
-
+                    _, _, output_rbg, output_dvs = model(inputs, inputs)
                     output = sum(output_dvs) / len(output_dvs)
                 else:
                     output = model(inputs)
-                    tet_loss = 0.0
-                    loss = 0.0
-                    lamb = 1e-3
-
-                    for i in range(len(output)):
-                        tet_loss += loss_fn(output[i], target)
-                    tet_loss /= len(output)
-                    loss = (1 - lamb) * tet_loss
-
-                    y = torch.zeros_like(output[-1]).fill_(args.threshold)
-                    secondLoss = torch.nn.MSELoss()
-                    tet_loss_second = secondLoss(output[-1], y)
-                    loss += lamb * tet_loss_second
             if isinstance(output, (tuple, list)):
                 output = output[0]
 
-            # loss = loss_fn(output, target)  # sdt loss
-
+            loss = loss_fn(output, target)
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
             closs = torch.tensor([0.], device=loss.device)
