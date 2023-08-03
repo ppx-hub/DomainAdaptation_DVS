@@ -12,6 +12,8 @@ import torchvision.datasets as datasets
 from timm.data import ImageDataset, create_loader, Mixup, FastCollateMixup, AugMixDataset
 from timm.data import create_transform
 from einops import rearrange, repeat
+import pickle
+import numpy as np
 from torchvision import transforms
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 from torch.utils.data import ConcatDataset
@@ -30,10 +32,12 @@ from .utils import dvs_channel_check_expend, rescale
 from PIL import Image
 import cv2
 import math
+from torch.utils.data import random_split
 DVSCIFAR10_MEAN_16 = [0.3290, 0.4507]
 DVSCIFAR10_STD_16 = [1.8398, 1.6549]
 
-DATA_DIR = '/data/datasets'
+DATA_DIR = '/home/hexiang/data/datasets/'
+# DATA_DIR = '/data/datasets/'
 
 DEFAULT_CROP_PCT = 0.875
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
@@ -78,6 +82,7 @@ class Transfer_DataSet(torchvision.datasets.VisionDataset):
 
 
 # 自定义HSV空间 transform
+from einops import repeat
 class ConvertHSV(object):
     """计算边缘梯度
     Args:
@@ -95,10 +100,38 @@ class ConvertHSV(object):
         Returns:
             PIL Image: PIL image, v channel.
         """
+        pre = np.asarray(img)
+        if len(pre.shape) == 2:  # 黑白图片简单复制
+            pre = np.tile(pre[:, :, np.newaxis], (1, 1, 3))
+            return Image.fromarray(pre.astype('uint8'))
+        if isinstance(img, torch.Tensor):
+            img = img.numpy().transpose(1, 2, 0)
         img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         return Image.fromarray(img.astype('uint8'))
 
+
+class Copydim(object):
+    """计算边缘梯度
+    Args:
+        None
+    """
+
+    def __init__(self):
+        pass
+
+    # transform 会调用该方法
+    def __call__(self, img):
+        """
+        Args:
+            img (PIL Image): PIL Image
+        Returns:
+            PIL Image: PIL image, v channel.
+        """
+        img = np.asarray(img)
+        if len(img.shape) == 2:  # 黑白图片简单复制
+            img = np.tile(img[:, :, np.newaxis], (1, 1, 3))
+        return Image.fromarray(img.astype('uint8'))
 
 def unpack_mix_param(args):
     mix_up = args['mix_up'] if 'mix_up' in args else False
@@ -159,6 +192,8 @@ def build_transform(is_train, img_size, use_hsv=True):
     if use_hsv:
         print("Used V-channel!")
         t.append(ConvertHSV())
+    else:
+        t.append(Copydim())
     t.append(transforms.ToTensor())
     # t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
     return transforms.Compose(t)
@@ -254,6 +289,7 @@ def get_mnist_data(batch_size, num_workers=8, same_da=False, **kwargs):
     """
     MNIST_MEAN = 0.1307
     MNIST_STD = 0.3081
+    img_size = 34  # 为N-MNIST准备
     if 'skip_norm' in kwargs and kwargs['skip_norm'] is True:
         train_transform = transforms.Compose([
             transforms.ToTensor(),
@@ -264,11 +300,11 @@ def get_mnist_data(batch_size, num_workers=8, same_da=False, **kwargs):
             transforms.Lambda(rescale)
         ])
     else:
-        train_transform = transforms.Compose([transforms.RandomCrop(28, padding=4),
-                                              # transforms.RandomRotation(10),
+        train_transform = transforms.Compose([transforms.Resize((img_size, img_size), interpolation=InterpolationMode.BILINEAR),
                                               transforms.ToTensor(),
                                               transforms.Normalize((MNIST_MEAN,), (MNIST_STD,))])
-        test_transform = transforms.Compose([transforms.ToTensor(),
+        test_transform = transforms.Compose([transforms.Resize((img_size, img_size), interpolation=InterpolationMode.BILINEAR),
+                                             transforms.ToTensor(),
                                              transforms.Normalize((MNIST_MEAN,), (MNIST_STD,))])
 
     train_datasets = datasets.MNIST(
@@ -288,6 +324,57 @@ def get_mnist_data(batch_size, num_workers=8, same_da=False, **kwargs):
 
     return train_loader, test_loader, False, None
 
+
+def get_transfer_mnist_data(batch_size, num_workers=8, same_da=False, **kwargs):
+    """s
+    获取MNIST数据
+    http://data.pymvpa.org/datasets/mnist/
+    :param batch_size: batch size
+    :param same_da: 为训练集使用测试集的增广方法
+    :param kwargs:
+    :return: (train loader, test loader, mixup_active, mixup_fn)
+    """
+    MNIST_MEAN = 0.1307
+    MNIST_STD = 0.3081
+    img_size = 34  # 为N-MNIST准备
+    if 'skip_norm' in kwargs and kwargs['skip_norm'] is True:
+        train_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Lambda(rescale)
+        ])
+        test_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Lambda(rescale)
+        ])
+    else:
+        train_transform = transforms.Compose([transforms.Resize((img_size, img_size), interpolation=InterpolationMode.BILINEAR),
+                                              transforms.ToTensor(),
+                                              transforms.Normalize((MNIST_MEAN,), (MNIST_STD,))])
+        test_transform = transforms.Compose([transforms.Resize((img_size, img_size), interpolation=InterpolationMode.BILINEAR),
+                                             transforms.ToTensor(),
+                                             transforms.Normalize((MNIST_MEAN,), (MNIST_STD,))])
+
+    train_datasets = datasets.MNIST(
+        root=DATA_DIR, train=True, transform=test_transform if same_da else train_transform, download=True)
+    test_datasets = datasets.MNIST(
+        root=DATA_DIR, train=False, transform=test_transform, download=True)
+    img_index = [[] for i in range(10)]
+    label_index = [0] * 60000
+    for idx, (img, label) in enumerate(train_datasets):
+        img_index[label].append(img)
+    for i in range(10):
+        img_index[i] = torch.stack(img_index[i], 0)
+        label_index[i * 6000:2 * i * 6000] = [i] * 6000
+    source_datasets = Transfer_DataSet(data=torch.cat(img_index, dim=0),
+                                       label=label_index)
+
+    source_loader = torch.utils.data.DataLoader(
+        source_datasets, batch_size=60000,
+        sampler=TransferSampler(torch.arange(0, 60000).tolist()),
+        pin_memory=True, drop_last=False, num_workers=16
+    )
+
+    return source_loader, None, False, None
 
 def get_fashion_data(batch_size, num_workers=8, same_da=False, **kwargs):
     """
@@ -331,12 +418,13 @@ def get_cifar10_data(batch_size, num_workers=8, same_da=False, **kwargs):
     :return: (train loader, test loader, mixup_active, mixup_fn)
     """
     use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
-    train_datasets, _ = build_dataset(True, 32, 'CIFAR10', DATA_DIR, same_da, False)
-    test_datasets, _ = build_dataset(False, 32, 'CIFAR10', DATA_DIR, same_da, False)
 
+    train_datasets, _ = build_dataset(True, 48, 'CIFAR10', DATA_DIR, same_da, False)
+    test_datasets, _ = build_dataset(False, 48, 'CIFAR10', DATA_DIR, same_da, False)
+    concat_dataset = ConcatDataset([train_datasets, test_datasets])
     train_loader = torch.utils.data.DataLoader(
-        train_datasets, batch_size=batch_size,
-        pin_memory=True, drop_last=True, shuffle=True,
+        concat_dataset, batch_size=batch_size,
+        pin_memory=True, drop_last=False, shuffle=True,
         num_workers=num_workers
     )
 
@@ -371,33 +459,9 @@ def get_cifar100_data(batch_size, num_workers=8, same_data=False, *args, **kwarg
     return train_loader, test_loader, False, None
 
 
-def get_origin_cifar10_data(batch_size, num_workers=8, same_da=False, **kwargs):
-    use_hsv = False
-    train_datasets, _ = build_dataset(True, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
-    test_datasets, _ = build_dataset(False, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
-
-    concat_dataset = ConcatDataset([train_datasets, test_datasets])  # concat dataset
-
-    img_index = [[] for i in range(10)]
-    label_index = [0] * 60000
-    for idx, (img, label) in enumerate(concat_dataset):
-        img_index[label].append(img)
-    for i in range(10):
-        img_index[i] = torch.stack(img_index[i], 0)
-        label_index[i * 6000:2 * i * 6000] = [i] * 6000
-    source_datasets = Transfer_DataSet(data=rearrange(torch.stack(img_index, dim=0), 'l b c w h -> (l b) c w h'),
-                                       label=label_index)
-
-    source_loader = torch.utils.data.DataLoader(
-        source_datasets, batch_size=60000,
-        sampler=TransferSampler(torch.arange(0, 60000).tolist()),
-        pin_memory=True, drop_last=False, num_workers=16
-    )
-    return source_loader, None, None, None
-
 def get_transfer_cifar10_data(batch_size, num_workers=8, same_da=False, **kwargs):
     use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
-    train_datasets, _ = build_dataset(True, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
+    train_datasets, _ = build_dataset(True, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)  # 原来是48
     test_datasets, _ = build_dataset(False, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
 
     concat_dataset = ConcatDataset([train_datasets, test_datasets])  # concat dataset
@@ -416,20 +480,6 @@ def get_transfer_cifar10_data(batch_size, num_workers=8, same_da=False, **kwargs
         source_datasets, batch_size=60000,
         sampler=TransferSampler(torch.arange(0, 60000).tolist()),
         pin_memory=True, drop_last=False, num_workers=16
-    )
-    return source_loader, None, None, None
-
-
-def get_combined_cifar10_data(batch_size, num_workers=8, same_da=False, **kwargs):
-    use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
-    train_datasets, _ = build_dataset(True, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
-    test_datasets, _ = build_dataset(False, 48, 'CIFAR10', DATA_DIR, same_da, use_hsv)
-
-    concat_dataset = ConcatDataset([train_datasets, test_datasets])  # concat dataset
-
-    source_loader = torch.utils.data.DataLoader(
-        concat_dataset, batch_size=batch_size,
-        pin_memory=True, drop_last=False, num_workers=8, shuffle=True
     )
     return source_loader, None, None, None
 
@@ -445,7 +495,7 @@ def get_transfer_CALTECH101_data(batch_size, num_workers=8, same_da=False, **kwa
     """
     use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
     datasets, _ = build_dataset(False, 48, 'CALTECH101', DATA_DIR, same_da, use_hsv)
-    dataset_length = 8299
+    dataset_length = 8709
 
     train_loader = torch.utils.data.DataLoader(
         datasets, batch_size=10000,
@@ -453,29 +503,76 @@ def get_transfer_CALTECH101_data(batch_size, num_workers=8, same_da=False, **kwa
         pin_memory=True, drop_last=False, num_workers=4
     )
 
-    return train_loader, None, None, None
+    cls_count = tonic.datasets.NCALTECH101.cls_count
+    portion = kwargs['portion'] if 'portion' in kwargs else .9
+    train_data_ratio = kwargs['train_data_ratio'] if 'train_data_ratio' in kwargs else 1.0
+    CALTECH101_list = {}
+    idx_begin = 0
+    for cls, count in enumerate(cls_count):
+        train_sample = round(portion * count * train_data_ratio)
+        CALTECH101_list[cls] = [idx_begin, idx_begin + train_sample]
+        idx_begin += count
+    return train_loader, CALTECH101_list, None, None
 
 
-def get_combined_CALTECH101_data(batch_size, num_workers=8, same_da=False, **kwargs):
+def get_CALTECH101_data(batch_size, num_workers=8, same_da=False, **kwargs):
     """
-    获取NCaltech101数据
+    获取Caltech101数据
     http://journal.frontiersin.org/Article/10.3389/fnins.2015.00437/abstract
     :param batch_size: batch size
     :param step: 仿真步长
     :param kwargs:
     :return: (train loader, test loader, mixup_active, mixup_fn)
     """
-    use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
-    datasets, _ = build_dataset(False, 48, 'CALTECH101', DATA_DIR, same_da, use_hsv)
-    dataset_length = 8299
+    datasets, _ = build_dataset(True, 48, 'CALTECH101', DATA_DIR, same_da, False)
+    cls_count = tonic.datasets.NCALTECH101.cls_count
+    dataset_length = tonic.datasets.NCALTECH101.length
+    portion = kwargs['portion'] if 'portion' in kwargs else .9
+    train_data_ratio = kwargs['train_data_ratio'] if 'train_data_ratio' in kwargs else 1.0
+    train_sample_weight = []
+    train_sample_index = []
+    train_count = 0
+    test_sample_index = []
+    idx_begin = 0
+    for count in cls_count:
+        sample_weight = dataset_length / count
+        train_sample = round(portion * count)
+        test_sample = count - train_sample
+        train_count += int(train_sample * train_data_ratio)
+        train_sample_weight.extend(
+            [sample_weight] * int(train_sample * train_data_ratio)
+        )
+        train_sample_weight.extend(
+            [0.] * (train_sample - int(train_sample * train_data_ratio))
+        )
+        train_sample_weight.extend(
+            [0.] * test_sample
+        )
+        train_sample_index.extend(
+            sample(list(range(idx_begin, idx_begin + int(train_sample * train_data_ratio))), int(train_sample * train_data_ratio))
+        )
+        test_sample_index.extend(
+            list(range(idx_begin + train_sample, idx_begin + train_sample + test_sample))
+        )
+        idx_begin += count
 
+    train_sampler = torch.utils.data.sampler.SubsetRandomSampler(train_sample_index)
+    test_sampler = torch.utils.data.sampler.SubsetRandomSampler(test_sample_index)
+
+    train_datasets, test_datasets = datasets, datasets
     train_loader = torch.utils.data.DataLoader(
-        datasets, batch_size=batch_size,
-        pin_memory=True, drop_last=False,
-        num_workers=4, shuffle=True
+        train_datasets, batch_size=batch_size,
+        sampler=train_sampler, pin_memory=True, drop_last=True,
+        num_workers=4
     )
 
-    return train_loader, None, None, None
+    test_loader = torch.utils.data.DataLoader(
+        test_datasets, batch_size=batch_size,
+        sampler=test_sampler, pin_memory=True, drop_last=False,
+        num_workers=4
+    )
+
+    return train_loader, test_loader, None, None
 
 
 def get_TinyImageNet_data(batch_size, num_workers=8, same_da=False, *args, **kwargs):
@@ -548,6 +645,192 @@ def get_transfer_imnet_data(args, _logger, data_config, num_aug_splits, **kwargs
     #     batch_size=batch_size, shuffle=False,
     #     num_workers=4, pin_memory=True)
     return train_dataset, None, None, None
+
+
+def get_nmnist_data(batch_size, step, **kwargs):
+    """
+    获取N-MNIST数据
+    http://journal.frontiersin.org/Article/10.3389/fnins.2015.00437/abstract
+    :param batch_size: batch size
+    :param step: 仿真步长
+    :param kwargs:
+    :return: (train loader, test loader, mixup_active, mixup_fn)
+    """
+    sensor_size = tonic.datasets.NMNIST.sensor_size
+    size = kwargs['size'] if 'size' in kwargs else 34
+
+    train_transform = transforms.Compose([
+        # tonic.transforms.Denoise(filter_time=10000),
+        # tonic.transforms.DropEvent(p=0.1),
+        tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step),
+    ])
+    test_transform = transforms.Compose([
+        # tonic.transforms.Denoise(filter_time=10000),
+        tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step),
+    ])
+
+    train_dataset = tonic.datasets.NMNIST(os.path.join(DATA_DIR, 'DVS/N-MNIST'),
+                                              transform=train_transform, train=True)
+    test_dataset = tonic.datasets.NMNIST(os.path.join(DATA_DIR, 'DVS/N-MNIST'),
+                                             transform=test_transform, train=False)
+
+    train_transform = transforms.Compose([
+        lambda x: torch.tensor(x, dtype=torch.float),
+        lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),
+        lambda x: dvs_channel_check_expend(x),
+        # transforms.RandomCrop(size, padding=size // 12),
+        # transforms.RandomHorizontalFlip(),
+        # transforms.RandomRotation(15)
+    ])
+    test_transform = transforms.Compose([
+        lambda x: torch.tensor(x, dtype=torch.float),
+        lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),
+        lambda x: dvs_channel_check_expend(x),
+    ])
+    if 'rand_aug' in kwargs.keys():
+        if kwargs['rand_aug'] is True:
+            n = kwargs['randaug_n']
+            m = kwargs['randaug_m']
+            train_transform.transforms.insert(2, RandAugment(m=m, n=n))
+
+    # if 'temporal_flatten' in kwargs.keys():
+    #     if kwargs['temporal_flatten'] is True:
+    #         train_transform.transforms.insert(-1, lambda x: temporal_flatten(x))
+    #         test_transform.transforms.insert(-1, lambda x: temporal_flatten(x))
+
+    train_dataset = DiskCachedDataset(train_dataset,
+                                      cache_path=os.path.join(DATA_DIR, 'DVS/N-MNIST/train_cache_{}'.format(step)),
+                                      transform=train_transform, num_copies=3)
+    test_dataset = DiskCachedDataset(test_dataset,
+                                     cache_path=os.path.join(DATA_DIR, 'DVS/N-MNIST/test_cache_{}'.format(step)),
+                                     transform=test_transform, num_copies=3)
+
+    mix_up, cut_mix, event_mix, beta, prob, num, num_classes, noise, gaussian_n = unpack_mix_param(kwargs)
+    mixup_active = cut_mix | event_mix | mix_up
+
+    if cut_mix:
+        train_dataset = CutMix(train_dataset,
+                               beta=beta,
+                               prob=prob,
+                               num_mix=num,
+                               num_class=num_classes,
+                               noise=noise)
+
+    if event_mix:
+        train_dataset = EventMix(train_dataset,
+                                 beta=beta,
+                                 prob=prob,
+                                 num_mix=num,
+                                 num_class=num_classes,
+                                 noise=noise,
+                                 gaussian_n=gaussian_n)
+    if mix_up:
+        train_dataset = MixUp(train_dataset,
+                              beta=beta,
+                              prob=prob,
+                              num_mix=num,
+                              num_class=num_classes,
+                              noise=noise)
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=batch_size,
+        pin_memory=True, drop_last=True, num_workers=8,
+        shuffle=True,
+    )
+
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=batch_size,
+        pin_memory=True, drop_last=False, num_workers=2,
+        shuffle=False,
+    )
+
+    return train_loader, test_loader, mixup_active, None
+
+
+def get_ntidigits_data(batch_size, step, **kwargs):
+    """
+    获取N-TIDIGITS数据 (tonic 新版本中的下载链接可能挂了，可以参考0.4.0的版本)
+    https://www.frontiersin.org/articles/10.3389/fnins.2018.00023/full
+    :param batch_size: batch size
+    :param step: 仿真步长
+    :param kwargs:
+    :return: (train loader, test loader, mixup_active, mixup_fn)
+    :format: (b,t,c,len) 不同于vision, audio中c为1, 并且没有h,w; 只有len=64
+    """
+    sensor_size = tonic.datasets.NTIDIGITS.sensor_size
+    train_transform = transforms.Compose([
+        # tonic.transforms.Denoise(filter_time=10000),
+        # tonic.transforms.DropEvent(p=0.1),
+        tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step),
+    ])
+    test_transform = transforms.Compose([
+        # tonic.transforms.Denoise(filter_time=10000),
+        tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step),
+    ])
+
+    train_dataset = tonic.datasets.NTIDIGITS(os.path.join(DATA_DIR, 'DVS/NTIDIGITS'),
+                                              transform=train_transform, train=True)
+
+    test_dataset = tonic.datasets.NTIDIGITS(os.path.join(DATA_DIR, 'DVS/NTIDIGITS'),
+                                             transform=test_transform, train=False)
+
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=batch_size,
+        pin_memory=True, drop_last=True, num_workers=8,
+        shuffle=True,
+    )
+
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=batch_size,
+        pin_memory=True, drop_last=False, num_workers=2,
+        shuffle=False,
+    )
+
+    return train_loader, test_loader, None, None
+
+
+def get_shd_data(batch_size, step, **kwargs):
+    """
+    获取SHD数据
+    https://ieeexplore.ieee.org/abstract/document/9311226
+    :param batch_size: batch size
+    :param step: 仿真步长
+    :param kwargs:
+    :return: (train loader, test loader, mixup_active, mixup_fn)
+    :format: (b,t,c,len) 不同于vision, audio中c为1, 并且没有h,w; 只有len=700
+    """
+    sensor_size = tonic.datasets.SHD.sensor_size
+    train_transform = transforms.Compose([
+        # tonic.transforms.Denoise(filter_time=10000),
+        # tonic.transforms.DropEvent(p=0.1),
+        tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step),
+    ])
+    test_transform = transforms.Compose([
+        # tonic.transforms.Denoise(filter_time=10000),
+        tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step),
+    ])
+
+    train_dataset = tonic.datasets.SHD(os.path.join(DATA_DIR, 'DVS/SHD'),
+                                              transform=train_transform, train=True)
+
+    test_dataset = tonic.datasets.SHD(os.path.join(DATA_DIR, 'DVS/SHD'),
+                                             transform=test_transform, train=False)
+
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=batch_size,
+        pin_memory=True, drop_last=True, num_workers=8,
+        shuffle=True,
+    )
+
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=batch_size,
+        pin_memory=True, drop_last=False, num_workers=2,
+        shuffle=False,
+    )
+
+    return train_loader, test_loader, None, None
 
 
 def get_dvsg_data(batch_size, step, **kwargs):
@@ -756,7 +1039,7 @@ def get_dvsc10_data(batch_size, step, dvs_da=False, **kwargs):
         train_dataset, batch_size=batch_size,
         sampler=torch.utils.data.sampler.SubsetRandomSampler(indices_train),
         pin_memory=True, drop_last=False, num_workers=8
-    )  # drop_last应该为True
+    )
 
     test_loader = torch.utils.data.DataLoader(
         test_dataset, batch_size=batch_size,
@@ -767,11 +1050,45 @@ def get_dvsc10_data(batch_size, step, dvs_da=False, **kwargs):
     return train_loader, test_loader, mixup_active, None
 
 
+def get_omni_data(batch_size, num_workers=8, same_da=False, **kwargs):
+    """
+    获取omni数据
+    http://journal.frontiersin.org/Article/10.3389/fnins.2015.00437/abstract
+    :param batch_size: batch size
+    :param step: 仿真步长
+    :param kwargs:
+    :return: (train loader, test loader, mixup_active, mixup_fn)
+    """
+    transform = transforms.Compose([
+        transforms.Resize((28, 28)),
+        transforms.ToTensor()])
+
+    train_dataset = datasets.Omniglot(
+        root="/data/datasets/", background=True, download=True, transform=transform
+    )
+    test_dataset = datasets.Omniglot(
+        root="/data/datasets/", background=False, download=True, transform=transform
+    )
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=batch_size,
+        pin_memory=True, drop_last=False, shuffle=True,
+        num_workers=4
+    )
+
+
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=batch_size,
+        pin_memory=True, drop_last=False,
+        num_workers=4
+    )
+
+    return train_loader, test_loader, None, None
+
 
 def get_transfer_dvsc10_data(batch_size, step, dvs_da=False, **kwargs):
     """
     获取DVS CIFAR10数据
-    http://journal.frontiersin.org/article/10.3389/fnins.2017.00309/full
     :param batch_size: batch size
     :param step: 仿真步长
     :param kwargs:
@@ -996,97 +1313,215 @@ def get_NCALTECH101_data(batch_size, step, dvs_da=False, **kwargs):
     return train_loader, test_loader, mixup_active, None
 
 
-def get_transfer_NCALTECH101_data(batch_size, step, dvs_da=False, **kwargs):
+
+def get_CEPDVS_data(batch_size, step, dvs_da=False, **kwargs):
     """
-    获取NCaltech101数据
-    http://journal.frontiersin.org/Article/10.3389/fnins.2015.00437/abstract
+    获取CEPDVS数据
     :param batch_size: batch size
     :param step: 仿真步长
     :param kwargs:
     :return: (train loader, test loader, mixup_active, mixup_fn)
     """
-    sensor_size = tonic.datasets.NCALTECH101.sensor_size
-    cls_count = tonic.datasets.NCALTECH101.cls_count
-    dataset_length = tonic.datasets.NCALTECH101.length
-    portion = kwargs['portion'] if 'portion' in kwargs else .9
+    sensor_size = None
+    cls_count = [500] * 20
+    portion = kwargs['portion'] if 'portion' in kwargs else .5
     size = kwargs['size'] if 'size' in kwargs else 48
     snr = kwargs['snr'] if 'snr' in kwargs else 0
     train_data_ratio = kwargs['train_data_ratio'] if 'train_data_ratio' in kwargs else 1.0
-    # print('portion', portion)
-    train_sample_weight = []
     train_sample_index = []
     train_count = 0
     test_sample_index = []
     idx_begin = 0
     for count in cls_count:
-        sample_weight = dataset_length / count
-        train_sample = round(portion * count)
-        test_sample = count - train_sample
+        train_sample = round(portion * count * train_data_ratio)  # 50%训练集
+        test_sample = count - round(0.8 * count)  # 20%测试集
         train_count += int(train_sample * train_data_ratio)
-        train_sample_weight.extend(
-            [sample_weight] * int(train_sample * train_data_ratio)
-        )
-        train_sample_weight.extend(
-            [0.] * (train_sample - int(train_sample * train_data_ratio))
-        )
-        train_sample_weight.extend(
-            [0.] * test_sample
-        )
         train_sample_index.extend(
-            sample(list(range(idx_begin, idx_begin + train_sample)), int(train_sample * train_data_ratio))
+            sample(list(range(idx_begin, idx_begin + train_sample)), int(train_sample))
         )
         test_sample_index.extend(
             list(range(idx_begin + train_sample, idx_begin + train_sample + test_sample))
         )
         idx_begin += count
 
-    train_sampler = torch.utils.data.sampler.WeightedRandomSampler(train_sample_weight, train_count)
+    train_sampler = torch.utils.data.sampler.SubsetRandomSampler(train_sample_index)
     test_sampler = torch.utils.data.sampler.SubsetRandomSampler(test_sample_index)
 
-    train_transform = transforms.Compose([
-        # tonic.transforms.Denoise(filter_time=10000),
-        # tonic.transforms.DropEvent(p=0.1),
-        tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step), ])
-    test_transform = transforms.Compose([
-        # tonic.transforms.Denoise(filter_time=10000),
+    transform = transforms.Compose([
         tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step), ])
 
-    train_dataset = tonic.datasets.NCALTECH101(os.path.join(DATA_DIR, 'DVS/NCALTECH101'), transform=train_transform)
-    test_dataset = tonic.datasets.NCALTECH101(os.path.join(DATA_DIR, 'DVS/NCALTECH101'), transform=test_transform)
+    dataset = tonic.datasets.CEPDVS(os.path.join(DATA_DIR, 'DVS/CEP-DVS'), transform=transform, first=False)
+    train_dataset, test_dataset = dataset, dataset
 
-    train_transform = transforms.Compose([
-        lambda x: torch.tensor(x, dtype=torch.float),
-        lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),
-    ])
-
+    if dvs_da is True:
+        print("use dvs_da")
+        train_transform = transforms.Compose([
+            lambda x: torch.tensor(x, dtype=torch.float),
+            lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),
+            transforms.RandomCrop(size, padding=size // 12),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(15)
+        ])
+    else:
+        if snr > 0:
+            train_transform = transforms.Compose([
+                lambda x: torch.tensor(x, dtype=torch.float),
+                lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),
+                lambda x: x + torch.randn(x.shape) * math.sqrt(torch.mean(torch.pow(x, 2)) / math.pow(10, snr / 10)),
+            ])
+        else:
+            train_transform = transforms.Compose([
+                lambda x: torch.tensor(x, dtype=torch.float),
+                lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),
+                transforms.RandomCrop(size, padding=size // 12),
+            ])
     test_transform = transforms.Compose([
         lambda x: torch.tensor(x, dtype=torch.float),
         lambda x: F.interpolate(x, size=[size, size], mode='bilinear', align_corners=True),
     ])  # 这里lambda返回的是地址, 注意不要用List复用.
 
     train_dataset = DiskCachedDataset(train_dataset,
-                                      cache_path=os.path.join(DATA_DIR, 'DVS/NCALTECH101/train_cache_{}'.format(step)),
+                                      cache_path=os.path.join(DATA_DIR, 'DVS/CEP-DVS/train_cache_{}'.format(step)),
                                       transform=train_transform, num_copies=3)
     test_dataset = DiskCachedDataset(test_dataset,
-                                     cache_path=os.path.join(DATA_DIR, 'DVS/NCALTECH101/test_cache_{}'.format(step)),
+                                     cache_path=os.path.join(DATA_DIR, 'DVS/CEP-DVS/test_cache_{}'.format(step)),
                                      transform=test_transform, num_copies=3)
 
-    mix_up, cut_mix, event_mix, beta, prob, num, num_classes, noise, gaussian_n = unpack_mix_param(kwargs)
-    mixup_active = cut_mix | event_mix | mix_up
-
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=len(train_sample_index),
-        sampler=TransferSampler(train_sample_index),
+        train_dataset, batch_size=batch_size,
+        sampler=train_sampler,
         pin_memory=True, drop_last=True, num_workers=8
     )
 
     test_loader = torch.utils.data.DataLoader(
         test_dataset, batch_size=batch_size,
         sampler=test_sampler,
+        pin_memory=True, drop_last=False, num_workers=4
+    )
+
+    return train_loader, test_loader, None, None
+
+
+class MyImageDataset(torch.utils.data.Dataset):
+    def __init__(self, directory, transform=None):
+        super().__init__()
+        self.directory = directory
+        self.image_files = sorted(os.listdir(directory), key=lambda x: int(x.split('.')[0]))
+        self.transform = transform
+        with open(os.path.join("/home/hexiang/data/datasets/DVS/CEP-DVS/", "targets.pkl"), 'rb') as f:
+            self.targets = pickle.load(f)
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx):
+        image_path = os.path.join(self.directory, self.image_files[idx])
+        image = Image.open(image_path)
+        if self.transform:
+            image = self.transform(image)
+        return image, self.targets[idx]
+
+
+def get_transfer_RGBCEPDVS_data(batch_size, num_workers=8, same_da=False, **kwargs):
+    """
+    获取transfer RGBCEPDVS数据, 返回targe对应的用于训练样本的index
+    :param batch_size: batch size
+    :param step: 仿真步长
+    :param kwargs:
+    :return: (train loader, test loader, mixup_active, mixup_fn)
+    """
+    use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
+    size = kwargs['size'] if 'size' in kwargs else 48
+    if use_hsv:
+        transform = transforms.Compose([
+            ConvertHSV(),
+            transforms.ToTensor(),
+            transforms.Resize((size, size), interpolation=InterpolationMode.BILINEAR)
+        ])
+    else:
+        transform = transforms.Compose([
+            lambda x: torch.tensor(x, dtype=torch.float),
+            transforms.Resize((size, size), interpolation=InterpolationMode.BILINEAR)
+        ])
+    datasets = MyImageDataset(directory="/home/hexiang/data/datasets/DVS/CEP-DVS/data/img/", transform=transform)
+    cls_count = [500] * 20
+    portion = kwargs['portion'] if 'portion' in kwargs else .5
+    train_data_ratio = kwargs['train_data_ratio'] if 'train_data_ratio' in kwargs else 1.
+
+    train_loader = torch.utils.data.DataLoader(
+        datasets, batch_size=10000,
+        sampler=TransferSampler(torch.arange(0, 10000).tolist()),
+        pin_memory=True, drop_last=False, num_workers=4
+    )
+
+    train_sample_index = []
+    idx_begin = 0
+    for count in cls_count:
+        train_sample = round(portion * count * train_data_ratio)
+        train_sample_index.extend(
+            list(range(idx_begin, idx_begin + train_sample))
+        )
+        idx_begin += count
+    CEPDVS_list = []
+    targets = None
+    with open(os.path.join("/home/hexiang/data/datasets/DVS/CEP-DVS/", "targets.pkl"), 'rb') as f:
+        targets = np.array(pickle.load(f))
+    for i in range(0, 20):
+        CEPDVS_list.append(np.argwhere(targets[train_sample_index]==i).squeeze())
+    return train_loader, CEPDVS_list, None, None
+
+
+def get_RGBCEPDVS_data(batch_size, num_workers=8, same_da=False, **kwargs):
+    """
+    获取RGBCEPDVS数据
+    :param batch_size: batch size
+    :param step: 仿真步长
+    :param kwargs:
+    :return: (train loader, test loader, mixup_active, mixup_fn)
+    """
+    use_hsv = not kwargs['no_use_hsv'] if 'no_use_hsv' in kwargs else True
+    size = kwargs['size'] if 'size' in kwargs else 48
+    transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize((size, size), interpolation=InterpolationMode.BILINEAR)
+        ])
+    datasets = MyImageDataset(directory="/home/hexiang/data/datasets/DVS/CEP-DVS/data/img/", transform=transform)
+
+    cls_count = [500] * 20
+    portion = kwargs['portion'] if 'portion' in kwargs else .5
+    train_data_ratio = kwargs['train_data_ratio'] if 'train_data_ratio' in kwargs else 1.
+    size = kwargs['size'] if 'size' in kwargs else 48
+    snr = kwargs['snr'] if 'snr' in kwargs else 0
+    train_data_ratio = kwargs['train_data_ratio'] if 'train_data_ratio' in kwargs else 1.0
+    train_sample_index = []
+    train_count = 0
+    test_sample_index = []
+    idx_begin = 0
+    for count in cls_count:
+        train_sample = round(portion * count * train_data_ratio)
+        test_sample = count - round(0.8 * count)
+        train_count += int(train_sample * train_data_ratio)
+        train_sample_index.extend(
+            sample(list(range(idx_begin, idx_begin + train_sample)), int(train_sample))
+        )
+        test_sample_index.extend(
+            list(range(idx_begin + train_sample, idx_begin + train_sample + test_sample))
+        )
+        idx_begin += count
+
+    train_loader = torch.utils.data.DataLoader(
+        datasets, batch_size=batch_size,
+        sampler=torch.utils.data.sampler.SubsetRandomSampler(train_sample_index),
+        pin_memory=True, drop_last=True, num_workers=4
+    )
+
+    test_loader = torch.utils.data.DataLoader(
+        datasets, batch_size=batch_size,
+        sampler=torch.utils.data.sampler.SubsetRandomSampler(test_sample_index),
         pin_memory=True, drop_last=False, num_workers=2
     )
 
-    return train_loader, None, None, None
+    return train_loader, test_loader, None, None
 
 
 def get_NCARS_data(batch_size, step, **kwargs):
@@ -1295,7 +1730,10 @@ def get_esimnet_data(batch_size, step, **kwargs):
 
     reconstruct = kwargs["reconstruct"] if "reconstruct" in kwargs else False
 
-    train_transform = None
+    train_transform = transforms.Compose([
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(15)
+    ])
     test_transform = transforms.Compose([
         lambda x: dvs_channel_check_expend(x),
     ])

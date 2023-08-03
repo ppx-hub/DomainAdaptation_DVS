@@ -1,30 +1,39 @@
-# -*- coding: utf-8 -*-            
-# Time : 2023/2/14 11:52
-# Author : Regulus
-# FileName: main_visual_losslandscape.py
-# Explain:
-# Software: PyCharm
-import tqdm
-
-from loss_landscape.plot_surface import *
-
-from Pytorch_Grad_Cam.cam import *
-
-import argparse
-import math
-import time
-import CKA
-import numpy
-import timm.models
-import random as rd
-import yaml
+import copy
 import os
+import sys
+
+import numpy as np
+import torch
+from scipy import stats
+from torchvision import transforms
+import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d import proj3d
+from tonic.datasets import NCALTECH101, CIFAR10DVS
+from braincog.datasets.datasets import unpack_mix_param, DATA_DIR
+from braincog.datasets.cut_mix import *
+import tonic
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib import rcParams
+import matplotlib.ticker as ticker
+from matplotlib.ticker import FuncFormatter
+
+import seaborn as sns
+from matplotlib.pyplot import MultipleLocator
+from pylab import *
+from tqdm import tqdm
+import argparse
+import time
+import CKA
+import timm.models
+import yaml
+import os
 import logging
 from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
+
 from braincog.base.node.node import *
 from braincog.utils import *
 from braincog.base.utils.criterions import *
@@ -35,12 +44,12 @@ from braincog.model_zoo.vgg_snn import VGG_SNN
 from braincog.model_zoo.resnet19_snn import resnet19
 from braincog.utils import save_feature_map, setup_seed
 from braincog.base.utils.visualization import plot_tsne_3d, plot_tsne, plot_confusion_matrix
+
 import torch
 import torch.nn as nn
 import torchvision.utils
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
-from rgb_hsv import RGB_HSV
-import matplotlib.pyplot as plt
+
 from timm.data import ImageDataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
 from timm.models import load_checkpoint, create_model, resume_checkpoint, convert_splitbn_model
 from timm.utils import *
@@ -48,7 +57,9 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy, JsdCro
 from timm.optim import create_optimizer
 from timm.scheduler import create_scheduler
 from timm.utils import ApexScaler, NativeScaler
-from copy import deepcopy
+
+# from ptflops import get_model_complexity_info
+# from thop import profile, clever_format
 
 torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('train')
@@ -59,12 +70,11 @@ config_parser = parser = argparse.ArgumentParser(description='Training Config', 
 parser.add_argument('-c', '--config', default='', type=str, metavar='FILE',
                     help='YAML config file specifying default arguments')
 
-
 parser = argparse.ArgumentParser(description='SNN Training and Evaluating')
 
 # Model parameters
-parser.add_argument('--source-dataset', default='cifar10', type=str)
-parser.add_argument('--target-dataset', default='dvsc10', type=str)
+parser.add_argument('--dataset', default='cifar10', type=str)
+parser.add_argument('--dataset-two', default='cifar10', type=str)
 parser.add_argument('--model', default='cifar_convnet', type=str, metavar='MODEL',
                     help='Name of model to train (default: "countception"')
 parser.add_argument('--pretrained', action='store_true', default=False,
@@ -257,7 +267,7 @@ parser.add_argument('--pin-mem', action='store_true', default=False,
                     help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
 parser.add_argument('--no-prefetcher', action='store_true', default=False,
                     help='disable fast prefetcher')
-parser.add_argument('--output', default='/home/hexiang/TransferLearning_For_DVS/Results_new_refined/', type=str, metavar='PATH',
+parser.add_argument('--output', default='/home/hexiang/DomainAdaptation_DVS/Results/', type=str, metavar='PATH',
                     help='path to output folder (default: none, current dir)')
 parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_METRIC',
                     help='Best metric (default: "top1"')
@@ -331,6 +341,10 @@ parser.add_argument('--conf-mat', action='store_true')
 parser.add_argument('--suffix', type=str, default='',
                     help='Add an additional suffix to the save path (default: \'\')')
 
+# for reconstructing es-imagenet
+parser.add_argument('--reconstructed', action='store_true',
+                    help='for ES-imagenet dataset')
+
 parser.add_argument('--DVS-DA', action='store_true',
                     help='use DA on DVS')
 
@@ -338,131 +352,15 @@ parser.add_argument('--DVS-DA', action='store_true',
 parser.add_argument('--traindata-ratio', default=1.0, type=float,
                     help='training data ratio')
 
-# snr value
-parser.add_argument('--snr', default=0, type=int,
-                    help='random noise amplitude controled by snr, 0 means no noise')
+# use TET loss or not (all default False, do not use)
+parser.add_argument('--TET-loss-first', action='store_true',
+                    help='use TET loss one part')
 
-parser.add_argument('--aug_smooth', action='store_true',
-                    help='Apply test time augmentation to smooth the CAM')
-parser.add_argument('--eigen_smooth', action='store_true', help='Reduce noise by taking the first principle componenet'
-         'of cam_weights*activations')
+parser.add_argument('--TET-loss-second', action='store_true',
+                    help='use TET loss two part')
 
-import os
-import numpy as np
-import torch
-from torchvision import transforms
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-from mpl_toolkits.mplot3d import proj3d
-from tonic.datasets import NCALTECH101, CIFAR10DVS
-import tonic
-from matplotlib import rcParams
-import seaborn as sns
-
-
-# for matplotlib 3D
-def get_proj(self):
-    """
-     Create the projection matrix from the current viewing position.
-
-     elev stores the elevation angle in the z plane
-     azim stores the azimuth angle in the (x, y) plane
-
-     dist is the distance of the eye viewing point from the object point.
-    """
-    # chosen for similarity with the initial view before gh-8896
-
-    relev, razim = np.pi * self.elev / 180, np.pi * self.azim / 180
-
-    # EDITED TO HAVE SCALED AXIS
-    xmin, xmax = np.divide(self.get_xlim3d(), self.pbaspect[0])
-    ymin, ymax = np.divide(self.get_ylim3d(), self.pbaspect[1])
-    zmin, zmax = np.divide(self.get_zlim3d(), self.pbaspect[2])
-
-    # transform to uniform world coordinates 0-1, 0-1, 0-1
-    worldM = proj3d.world_transformation(xmin, xmax,
-                                         ymin, ymax,
-                                         zmin, zmax)
-
-    # look into the middle of the new coordinates
-    R = self.pbaspect / 2
-
-    xp = R[0] + np.cos(razim) * np.cos(relev) * self.dist
-    yp = R[1] + np.sin(razim) * np.cos(relev) * self.dist
-    zp = R[2] + np.sin(relev) * self.dist
-    E = np.array((xp, yp, zp))
-
-    self.eye = E
-    self.vvec = R - E
-    self.vvec = self.vvec / np.linalg.norm(self.vvec)
-
-    if abs(relev) > np.pi / 2:
-        # upside down
-        V = np.array((0, 0, -1))
-    else:
-        V = np.array((0, 0, 1))
-    zfront, zback = -self.dist, self.dist
-
-    viewM = proj3d.view_transformation(E, R, V)
-    projM = self._projection(zfront, zback)
-    M0 = np.dot(viewM, worldM)
-    M = np.dot(projM, M0)
-    return M
-
-
-def event_vis_raw(x):
-    sns.set_style('whitegrid')
-    # sns.set_palette('deep', desat=.6)
-    sns.set_context("notebook", font_scale=1.5,
-                    rc={"lines.linewidth": 2.5})
-    Axes3D.get_proj = get_proj
-    x = np.array(x.tolist())  # x, y, t, p
-    mask = (x[:, 3] == 1)
-    x_pos = x[mask]
-    x_neg = x[mask == False]
-    pos_idx = np.random.choice(x_pos.shape[0], 10000)
-    neg_idx = np.random.choice(x_neg.shape[0], 10000)
-    # x_pos[pos_idx, 2] = 0
-    # x_neg[neg_idx, 2] = 0
-
-    fig = plt.figure(figsize=plt.figaspect(0.5) * 1.5)
-    ax = Axes3D(fig)
-    ax.pbaspect = np.array([2.0, 1.0, 0.5])
-    ax.view_init(elev=10, azim=-75)
-    # ax.view_init(elev=15, azim=15)
-    ax.set_xlabel('t (time step)')
-    ax.set_ylabel('w (pixel)')
-    ax.set_zlabel('h (pixel)')
-    # ax.set_xticks([])
-    # ax.set_yticks([])
-    # ax.set_zticks([])
-    # ax.scatter(x_pos[pos_idx, 2], 48 - x_pos[pos_idx, 0], 48 - x_pos[pos_idx, 1], color='red', alpha=0.3, s=1.)
-    # ax.scatter(x_neg[neg_idx, 2], 48 - x_neg[neg_idx, 0], 48 - x_neg[neg_idx, 1], color='blue', alpha=0.3, s=1.)
-    ax.scatter(x_pos[:, 0], 48 - x_pos[:, 1] * 0.375, 48 - x_pos[:, 2] * 0.375, color='red', alpha=0.3, s=1.)
-    # ax.scatter(x_neg[:, 0], 64 - x_neg[:, 1] // 2, 128 - x_neg[:, 2], color='blue', alpha=0.3, s=1.)
-    ax.scatter(18000, 48 - x_pos[:, 1] * 0.375, 48 - x_pos[:, 2] * 0.375, color='red', alpha=0.3, s=1.)
-    # ax.scatter(18000, 64 - x_pos[:, 1] // 2, 128 - x_pos[:, 2], color='blue', alpha=0.3, s=1.)
-
-
-def get_dataloader_ncal(step, **kwargs):
-    sensor_size = tonic.datasets.CIFAR10DVS.sensor_size
-    transform = tonic.transforms.Compose([
-        # tonic.transforms.DropPixel(hot_pixel_frequency=.999),
-        # tonic.transforms.Denoise(500),
-        tonic.transforms.DropEvent(p=0.0),
-        # tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step),
-        # lambda x: F.interpolate(torch.tensor(x, dtype=torch.float), size=[48, 48], mode='bilinear', align_corners=True),
-    ])
-    dataset = tonic.datasets.CIFAR10DVS(os.path.join(DATA_DIR, 'DVS/DVS_Cifar10'), transform=transform)
-    # dataset = [dataset[5569], dataset[8196]]
-    # dataset = [dataset[5000], dataset[6000]] # 1958
-    # dataset = [dataset[0]]
-    # loader = torch.utils.data.DataLoader(
-    #     dataset, batch_size=1,
-    #     shuffle=False,
-    #     pin_memory=True, drop_last=True, num_workers=8
-    # )
-    return dataset
+parser.add_argument('--no-use-hsv', action='store_true',
+                    help='do not use hsv')
 
 try:
     from apex import amp
@@ -497,14 +395,29 @@ def _parse_args():
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
     return args, args_text
 
+CALTECH101_list = []
+CEPDVS_list = []
 
 def main():
-    torch.set_num_threads(20)
-    os.environ["OMP_NUM_THREADS"] = "20"  # 设置OpenMP计算库的线程数
-    os.environ["MKL_NUM_THREADS"] = "20"  # 设置MKL-DNN CPU加速库的线程数。
     args, args_text = _parse_args()
+    # args.no_spike_output = args.no_spike_output | args.cut_mix
     args.no_spike_output = True
-    torch.cuda.set_device('cuda:%d' % args.device)
+    output_dir = ''
+    if args.local_rank == 0:
+        output_base = args.output if args.output else './output'
+        exp_name = '-'.join([
+            args.model,
+            args.dataset,
+            str(args.step),
+            "seed_{}".format(args.seed)
+        ])
+        output_dir = get_outdir(output_base, 'Baseline', exp_name)
+        args.output_dir = output_dir
+        setup_default_logging(log_path=os.path.join(output_dir, 'logx.txt'))
+
+    else:
+        setup_default_logging()
+
     args.prefetcher = not args.no_prefetcher
     args.distributed = False
     if 'WORLD_SIZE' in os.environ:
@@ -517,7 +430,15 @@ def main():
     # args.device = 'cuda:0'
     args.world_size = 1
     args.rank = 0  # global rank
-
+    if args.distributed:
+        args.num_gpu = 1
+        args.device = 'cuda:%d' % args.local_rank
+        torch.cuda.set_device(args.local_rank)
+        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+        args.world_size = torch.distributed.get_world_size()
+        args.rank = torch.distributed.get_rank()
+    else:
+        torch.cuda.set_device('cuda:%d' % args.device)
     assert args.rank >= 0
 
     if args.distributed:
@@ -534,7 +455,7 @@ def main():
         pretrained=args.pretrained,
         num_classes=args.num_classes,
         adaptive_node=args.adaptive_node,
-        dataset=args.target_dataset,
+        dataset=args.dataset,
         step=args.step,
         encode_type=args.encode,
         node_type=eval(args.node_type),
@@ -547,11 +468,13 @@ def main():
         temporal_flatten=args.temporal_flatten,
         layer_by_layer=args.layer_by_layer,
         n_groups=args.n_groups,
+        reconstruct=args.reconstructed,
+        TET_loss=args.TET_loss_first or args.TET_loss_second
     )
 
-    if 'dvs' in args.target_dataset:
+    if 'dvs' in args.dataset:
         args.channels = 2
-    elif 'mnist' in args.target_dataset:
+    elif 'mnist' in args.dataset:
         args.channels = 1
     else:
         args.channels = 3
@@ -567,62 +490,144 @@ def main():
         _logger.info('Model %s created, param count: %d' %
                      (args.model, sum([m.numel() for m in model.parameters()])))
 
+    num_aug_splits = 0
+    if args.aug_splits > 0:
+        assert args.aug_splits > 1, 'A split of 1 makes no sense'
+        num_aug_splits = args.aug_splits
+
+    if args.split_bn:
+        assert num_aug_splits > 1 or args.resplit
+        model = convert_splitbn_model(model, max(num_aug_splits, 2))
+
+    use_amp = None
+    if args.amp:
+        # for backwards compat, `--amp` arg tries apex before native amp
+        if has_apex:
+            args.apex_amp = True
+        elif has_native_amp:
+            args.native_amp = True
+    if args.apex_amp and has_apex:
+        use_amp = 'apex'
+    elif args.native_amp and has_native_amp:
+        use_amp = 'native'
+    elif args.apex_amp or args.native_amp:
+        _logger.warning("Neither APEX or native Torch AMP is available, using float32. "
+                        "Install NVIDA apex or upgrade to PyTorch 1.6")
+
+    if args.num_gpu > 1:
+        if use_amp == 'apex':
+            _logger.warning(
+                'Apex AMP does not work well with nn.DataParallel, disabling. Use DDP or Torch AMP.')
+            use_amp = None
+        model = nn.DataParallel(model, device_ids=list(range(args.num_gpu))).cuda()
+        assert not args.channels_last, "Channels last not supported with DP, use DDP."
+    else:
+        model = model.cuda()
+        if args.channels_last:
+            model = model.to(memory_format=torch.channels_last)
+
+    optimizer = create_optimizer(args, model)
+
+    amp_autocast = suppress  # do nothing
+    loss_scaler = None
+    if use_amp == 'apex':
+        model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
+        loss_scaler = ApexScaler()
+        if args.local_rank == 0:
+            _logger.info('Using NVIDIA APEX AMP. Training in mixed precision.')
+    elif use_amp == 'native':
+        amp_autocast = torch.cuda.amp.autocast
+        loss_scaler = NativeScaler()
+        if args.local_rank == 0:
+            _logger.info('Using native Torch AMP. Training in mixed precision.')
+    else:
+        if args.local_rank == 0:
+            _logger.info('AMP not enabled. Training in float32.')
+
+    # optionally resume from a checkpoint
+    resume_epoch = None
+    if args.resume and args.eval_checkpoint == '':
+        args.eval_checkpoint = args.resume
+    if args.resume:
+        args.eval = True
+        # checkpoint = torch.load(args.resume, map_location='cpu')
+        # model.load_state_dict(checkpoint['state_dict'], False)
+        resume_epoch = resume_checkpoint(
+            model, args.resume,
+            optimizer=None if args.no_resume_opt else optimizer,
+            loss_scaler=None if args.no_resume_opt else loss_scaler,
+            log_info=args.local_rank == 0)
+        # print(model.get_attr('mu'))
+        # print(model.get_attr('sigma'))
+
+    if args.critical_loss or args.spike_rate:
+        model.set_requires_fp(True)
+
+    model_ema = None
+    if args.model_ema:
+        # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
+        model_ema = ModelEma(
+            model,
+            decay=args.model_ema_decay,
+            device='cpu' if args.model_ema_force_cpu else '',
+            resume=args.resume)
+
+    if args.node_resume:
+        ckpt = torch.load(args.node_resume, map_location='cpu')
+        model.load_node_weight(ckpt, args.node_trainable)
+
+    model_without_ddp = model
+    if args.distributed:
+        if args.sync_bn:
+            assert not args.split_bn
+            try:
+                if has_apex and use_amp != 'native':
+                    # Apex SyncBN preferred unless native amp is activated
+                    model = convert_syncbn_model(model)
+                else:
+                    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+                if args.local_rank == 0:
+                    _logger.info(
+                        'Converted model to use Synchronized BatchNorm. WARNING: You may have issues if using '
+                        'zero initialized BN layers (enabled by default for ResNets) while sync-bn enabled.')
+            except Exception as e:
+                _logger.error('Failed to enable Synchronized BatchNorm. Install Apex or Torch >= 1.1')
+        if has_apex and use_amp != 'native':
+            # Apex DDP preferred unless native amp is activated
+            if args.local_rank == 0:
+                _logger.info("Using NVIDIA APEX DistributedDataParallel.")
+            model = ApexDDP(model, delay_allreduce=True)
+        else:
+            if args.local_rank == 0:
+                _logger.info("Using native Torch DistributedDataParallel.")
+            model = NativeDDP(model, device_ids=[args.local_rank],
+                              find_unused_parameters=True)  # can use device str in Torch >= 1.1
+        model_without_ddp = model.module
+    # NOTE: EMA model does not need to be wrapped by DDP
+
+    lr_scheduler, num_epochs = create_scheduler(args, optimizer)
+    start_epoch = 0
+    if args.start_epoch is not None:
+        # a specified start_epoch will always override the resume epoch
+        start_epoch = args.start_epoch
+    elif resume_epoch is not None:
+        start_epoch = resume_epoch
+    if lr_scheduler is not None and start_epoch > 0:
+        lr_scheduler.step(start_epoch)
+
+    if args.local_rank == 0:
+        _logger.info('Scheduled epochs: {}'.format(num_epochs))
+
     # now config only for imnet
     data_config = resolve_data_config(vars(args), model=model, verbose=False)
-    # source_loader_train, _, _, _ = eval('get_transfer_%s_data' % args.source_dataset)(
-    #     batch_size=args.batch_size,
-    #     step=args.step,
-    #     args=args,
-    #     _logge=_logger,
-    #     data_config=data_config,
-    #     size=args.event_size,
-    #     mix_up=args.mix_up,
-    #     cut_mix=args.cut_mix,
-    #     event_mix=args.event_mix,
-    #     beta=args.cutmix_beta,
-    #     prob=args.cutmix_prob,
-    #     gaussian_n=args.gaussian_n,
-    #     num=args.cutmix_num,
-    #     noise=args.cutmix_noise,
-    #     num_classes=args.num_classes,
-    #     rand_aug=args.rand_aug,
-    #     randaug_n=args.randaug_n,
-    #     randaug_m=args.randaug_m,
-    #     portion=args.train_portion,
-    #     _logger=_logger,
-    # )
-
-
-    origin_loader_train, _, _, _ = eval('get_origin_dvsc10_data')(
+    loader_train, loader_eval, mixup_active, mixup_fn = eval('get_%s_data' % args.dataset)(
         batch_size=args.batch_size,
         step=args.step,
-        args=args,
-        _logge=_logger,
-        data_config=data_config,
-        size=args.event_size,
-        mix_up=args.mix_up,
-        cut_mix=args.cut_mix,
-        event_mix=args.event_mix,
-        beta=args.cutmix_beta,
-        prob=args.cutmix_prob,
-        gaussian_n=args.gaussian_n,
-        num=args.cutmix_num,
-        noise=args.cutmix_noise,
-        num_classes=args.num_classes,
-        rand_aug=args.rand_aug,
-        randaug_n=args.randaug_n,
-        randaug_m=args.randaug_m,
-        portion=args.train_portion,
-        _logger=_logger,
-    )
-
-    target_loader_train, target_loader_eval, mixup_active, mixup_fn = eval('get_%s_data' % args.target_dataset)(
-        batch_size=args.batch_size,
         dvs_da=args.DVS_DA,
-        step=args.step,
         args=args,
         _logge=_logger,
         data_config=data_config,
+        num_aug_splits=num_aug_splits,
         size=args.event_size,
         mix_up=args.mix_up,
         cut_mix=args.cut_mix,
@@ -637,14 +642,71 @@ def main():
         randaug_n=args.randaug_n,
         randaug_m=args.randaug_m,
         portion=args.train_portion,
+        reconstruct=args.reconstructed,
         _logger=_logger,
         train_data_ratio=args.traindata_ratio,
-        snr=args.snr,
         data_mode="full",
         frames_num=12,
         data_type="frequency"
     )
 
+    source_loader_train, source_loader_list, _, _ = eval('get_transfer_%s_data' % args.dataset_two)(
+        batch_size=args.batch_size,
+        step=args.step,
+        args=args,
+        _logge=_logger,
+        data_config=data_config,
+        num_aug_splits=num_aug_splits,
+        size=args.event_size,
+        mix_up=args.mix_up,
+        cut_mix=args.cut_mix,
+        event_mix=args.event_mix,
+        beta=args.cutmix_beta,
+        prob=args.cutmix_prob,
+        gaussian_n=args.gaussian_n,
+        num=args.cutmix_num,
+        noise=args.cutmix_noise,
+        num_classes=args.num_classes,
+        rand_aug=args.rand_aug,
+        randaug_n=args.randaug_n,
+        randaug_m=args.randaug_m,
+        portion=args.train_portion,
+        _logger=_logger,
+        no_use_hsv=args.no_use_hsv
+    )
+
+    global CALTECH101_list
+    global CEPDVS_list
+    CALTECH101_list = source_loader_list
+    CEPDVS_list = source_loader_list
+    if args.loss_fn == 'mse':
+        train_loss_fn = UnilateralMse(1.)
+        validate_loss_fn = UnilateralMse(1.)
+
+    else:
+        if args.jsd:
+            assert num_aug_splits > 1  # JSD only valid with aug splits set
+            train_loss_fn = JsdCrossEntropy(num_splits=num_aug_splits, smoothing=args.smoothing).cuda()
+        elif mixup_active:
+            # smoothing is handled with mixup target transform
+            train_loss_fn = SoftTargetCrossEntropy().cuda()
+        elif args.smoothing:
+            train_loss_fn = LabelSmoothingCrossEntropy(smoothing=args.smoothing).cuda()
+        else:
+            train_loss_fn = nn.CrossEntropyLoss().cuda()
+
+        validate_loss_fn = nn.CrossEntropyLoss().cuda()
+
+    if args.loss_fn == 'mix':
+        train_loss_fn = MixLoss(train_loss_fn)
+        validate_loss_fn = MixLoss(validate_loss_fn)
+
+    eval_metric = args.eval_metric
+    best_metric = None
+    best_epoch = None
+    from copy import deepcopy
+    model_a = deepcopy(model)
+    model_b = deepcopy(model)
     if args.eval:  # evaluate the model
         if args.distributed:
             state_dict = torch.load(args.eval_checkpoint)['state_dict_ema']
@@ -656,136 +718,243 @@ def main():
 
             model.load_state_dict(new_state_dict)
         else:
-            model.load_state_dict(torch.load(args.eval_checkpoint, map_location='cpu')['state_dict'])
-            # pass
-            # print("no model load")
-        # --------------------------------------------------------------------------
-        # Show Acc
-        # --------------------------------------------------------------------------
-        print("load model finished!")
-
-
-    """ python cam.py -image-path <path_to_image>
-    Example usage of loading an image, and computing:
-        1. CAM
-        2. Guided Back Propagation
-        3. Combining both
-    """
-
-    # Choose the target layer you want to compute the visualization for.
-    # Usually this will be the last convolutional layer in the model.
-    # Some common choices can be:
-    # Resnet18 and 50: model.layer4
-    # VGG, densenet161: model.features[-1]
-    # mnasnet1_0: model.layers[-1]
-    # You can print the model to help chose the layer
-    # You can pass a list with several target layers,
-    # in that case the CAMs will be computed per layer and then aggregated.
-    # You can also try selecting all layers of a certain type, with e.g:
-    # from pytorch_grad_cam.utils.find_layers import find_layer_types_recursive
-    # find_layer_types_recursive(model, [torch.nn.ReLU])
-    target_layers = [model.feature[-1]]
-
-    # if args.target_dataset == "dvsc10" or args.target_dataset == "NCALTECH101" or args.target_dataset == "nomni":  # ImageNet中回来的loader其实是数据集,在后面处理
-    #     source_input_list, source_label_list = next(iter(source_loader_train))
-        # origin_input_list, origin_label_list = next(iter(origin_loader_train))
-
-
-    # for batch_idx, (target_loader_use, origin_loader_use) in enumerate(zip(target_loader_train, origin_loader_train)):
-    choose_idx = 5002  # 5012, 5002
-    if True:
-        inputs = 0.0
-        label = 0.0
-        for batch_idx, (inputs_tmp, label_tmp) in tqdm.tqdm(enumerate(origin_loader_train)):
-            if batch_idx == choose_idx:
-                inputs = inputs_tmp
-                label = label_tmp
-                break
+            if args.dataset == "dvsc10":
+                model_a.load_state_dict(torch.load("/home/hexiang/TransferLearning_For_DVS/Results_lastest/Baseline/VGG_SNN-dvsc10-10-seed_42-bs_120-DA_True-ls_0.0-lr_0.005-traindataratio_1.0-TET_first_True-TET_second_True/model_best.pth.tar", map_location=torch.device('cpu'))['state_dict'])
+            elif args.dataset == "NCALTECH101":
+                model_a.load_state_dict(torch.load(
+                    "/home/hexiang/DomainAdaptation_DVS/Results/Baseline/VGG_SNN-NCALTECH101-10-seed_42-bs_120-DA_False-ls_0.0-lr_0.005-traindataratio_1.0-TET_loss_True-refined_False/model_best.pth.tar",
+                    map_location=torch.device('cpu'))['state_dict'])
+            elif args.dataset == "omni":
+                model_a.load_state_dict(torch.load(
+                    "/home/hexiang/TransferLearning_For_DVS/Results_711/Baseline/SCNN-omni-12-seed_42-bs_64-DA_False-ls_0.0-lr_0.1-traindataratio_1.0-TET_first_False-TET_second_False-refined_False/model_best.pth.tar",
+                    map_location=torch.device('cpu'))['state_dict'])
             else:
-                continue
-
-        plt.figure(figsize=(8, 6))
-        plt.xlabel('w (pixel)')
-        plt.ylabel('h (pixel)')
-        rgb_img = inputs[0]  # (1, 10, 2, 48, 48) -> (10, 2, 48, 48)
-        event_frame_plot_2d(rgb_img)
-        rgb_img = rgb_img[0, 0, :, :].unsqueeze(0).repeat(3, 1, 1) / 255
-
-        for batch_idx, (inputs_tmp, label_tmp) in tqdm.tqdm(enumerate(target_loader_train)):
-            if batch_idx == choose_idx:
-                inputs = inputs_tmp
-                label = label_tmp
-                break
+                pass
+            if args.dataset_two == "dvsc10":
+                model_b.load_state_dict(torch.load(
+                    "/home/hexiang/TransferLearning_For_DVS/Results_lastest/Baseline/VGG_SNN-dvsc10-10-seed_47-bs_120-DA_True-ls_0.0-lr_0.005-traindataratio_1.0-TET_first_True-TET_second_True/model_best.pth.tar",
+                    map_location=torch.device('cpu'))['state_dict'])
+                # model_b.load_state_dict(torch.load(
+                #     "/home/hexiang/TransferLearning_For_DVS/Results_additional/Baseline/VGG_SNN-cifar10-10-seed_42-bs_120-DA_True-ls_0.0-lr_0.005-traindataratio_1.0-TET_first_True-TET_second_True-refined_False/model_best.pth.tar",
+                #     map_location=torch.device('cpu'))['state_dict'])
+            elif args.dataset_two == "cifar10":
+                model_b.load_state_dict(torch.load("/home/hexiang/TransferLearning_For_DVS/Results_additional/Baseline/VGG_SNN-cifar10-10-seed_42-bs_120-DA_True-ls_0.0-lr_0.005-traindataratio_1.0-TET_first_True-TET_second_True-refined_False/model_best.pth.tar", map_location=torch.device('cpu'))['state_dict'])
+            elif args.dataset_two == "CALTECH101":
+                model_b.load_state_dict(torch.load(
+                    "/home/hexiang/DomainAdaptation_DVS/Results/Baseline/VGG_SNN-CALTECH101-10-seed_42-bs_120-DA_False-ls_0.0-lr_0.005-traindataratio_1.0-TET_loss_True-refined_False//model_best.pth.tar",
+                    map_location=torch.device('cpu'))['state_dict'])
             else:
-                continue
-
-        #Using the with statement ensures the context is freed, and you can
-        #recreate different CAM objects in a loop.
-        cam_algorithm = GradCAMPlusPlus
-        inputs = inputs.type(torch.FloatTensor).cuda()
-        model = model.cuda()
-        with cam_algorithm(model=model,
-                           target_layers=target_layers,
-                           use_cuda=False) as cam:
-
-            # AblationCAM and ScoreCAM have batched implementations.
-            # You can override the internal batch size for faster computation.
-            cam.batch_size = 32
-
-            # grayscale_cam = cam(input_tensor=inputs,
-            #                     targets=[ClassifierOutputTarget(origin_label[0].item())],
-            #                     aug_smooth=args.aug_smooth,
-            #                     eigen_smooth=args.eigen_smooth)
-
-            grayscale_cam = cam(input_tensor=inputs,
-                                targets=None,
-                                aug_smooth=args.aug_smooth,
-                                eigen_smooth=args.eigen_smooth)
-
-            # Here grayscale_cam has only one image in the batch
-            grayscale_cam = grayscale_cam[0, :]
-
-            # cam_image = show_cam_on_image(rgb_img.permute(1, 2, 0).numpy(), grayscale_cam, use_rgb=True, image_weight=0.0)
-            cam_image = show_cam_on_image(np.ones((48, 48, 3)), grayscale_cam, use_rgb=True,
-                                          image_weight=0.0)
-            # # cam_image is RGB encoded whereas "cv2.imwrite" requires BGR encoding.
-        # rgb_img = cv2.resize(rgb_img.permute(1, 2, 0).numpy(), (32, 32))
-
-        # cv2.imwrite(f'{args.method}_cam.jpg', cam_image)
-        plt.set_ylim(bottom=0.)
-        plt.savefig('plot_before{}.jpg', bbox_inches='tight')
-        plt.imshow(cam_image, alpha=1.0)
-        # plt.show()
-        # plt.axis('off')
-        # plt.show()
-        # plt.savefig('gradcam_pic/plot_id{}.jpg'.format(batch_idx), bbox_inches='tight')
-        plt.savefig('plot_after{}.jpg', bbox_inches='tight')
-
-        # if batch_idx == 500:
-        #     break
+                pass
+        for i in range(1):
+            validate(start_epoch, model_a, model_b, loader_train, source_loader_train, validate_loss_fn, args,
+                                   visualize=args.visualize, spike_rate=args.spike_rate,
+                                   tsne=args.tsne, conf_mat=args.conf_mat)
+        return
 
 
-def event_frame_plot_2d(event):
 
-    for t in range(event.shape[0]):
-        pos_idx = []
-        neg_idx = []
-        for x in range(event.shape[2]):
-            for y in range(event.shape[3]):
-                if event[t, 0, x, y] > 0:
-                    pos_idx.append((x, y, event[t, 0, x, y]))
-                if event[t, 1, x, y] > 0:
-                    neg_idx.append((x, y, event[t, 0, x, y]))
-        if len(pos_idx) > 0:
-            # print(t)
-            pos_x, pos_y, pos_c = np.split(np.array(pos_idx), 3, axis=1)
-            # plt.scatter(48 - pos_x[:, 0] * 0.375, 48 - pos_y[:, 0] * 0.375, c='red', alpha=1, s=1)
-            plt.scatter(pos_x[:, 0] * 0.375, pos_y[:, 0] * 0.375, c='white', alpha=1, s=1)
-        if len(neg_idx) > 0:
-            neg_x, neg_y, neg_c = np.split(np.array(neg_idx), 3, axis=1)
-            # plt.scatter(48 - neg_x[:, 0] * 0.375, 48 - neg_y[:, 0] * 0.375, c='blue', alpha=1, s=1)
-            plt.scatter(neg_x[:, 0] * 0.375, neg_y[:, 0] * 0.375, c='blue', alpha=1, s=1)
-    # plt.show()
+features_out_hook = []
+def hook(module, fea_in, fea_out):
+    global features_out_hook
+    features_out_hook.append(fea_out)
+    return None
+
+
+def validate(epoch, model_a, model_b, loader, loader_two, loss_fn, args, amp_autocast=suppress,
+             log_suffix='', visualize=False, spike_rate=False, tsne=False, conf_mat=False):
+    # model_a 跑dvs, model_b 跑rgb
+    model_a.eval()
+    model_b.eval()
+    last_idx = len(loader) - 1
+
+    global features_out_hook
+    features_a_out_hook = []
+    features_b_out_hook = []
+    for child in model_a.modules():
+        if isinstance(child, nn.Conv2d) or isinstance(child, nn.BatchNorm2d) or isinstance(child, nn.Flatten) \
+                or isinstance(child, nn.Linear) or isinstance(child, LIFNode) or isinstance(child, nn.AvgPool2d):
+            child.register_forward_hook(hook=hook)
+
+    for child in model_b.modules():
+        if isinstance(child, nn.Conv2d) or isinstance(child, nn.BatchNorm2d) or isinstance(child, nn.Flatten) \
+                or isinstance(child, nn.Linear) or isinstance(child, LIFNode) or isinstance(child, nn.AvgPool2d):
+            child.register_forward_hook(hook=hook)
+
+    with torch.no_grad():
+        repeat = 16 # repeat 的次数是需要的sample数目除以batch size
+        cka = torch.zeros((30, 30))
+        scaled_hsic = torch.zeros(repeat, 30, 30)
+        normalization_d = torch.zeros(repeat, 30, 30)
+        source_input_list, source_label_list = next(iter(loader_two))
+        global CALTECH101_list, CEPDVS_list
+
+        for batch_idx, (inputs, target) in enumerate(tqdm(loader)):
+            rgb_index = []
+            for i in range(len(target)):
+                import random
+                rgb_index.append(random.randint(CALTECH101_list[target[i].item()][0], CALTECH101_list[target[i].item()][1]))
+            inputs_two = source_input_list[rgb_index]
+            if args.dataset_two == "cifar10" or args.dataset_two == "CALTECH101":
+                inputs_two = inputs_two[:, 0:2, :, :]
+            if batch_idx == repeat:
+                break
+            features_a_out_hook = [0.0 for i in range(0, 30)]
+            features_b_out_hook = [0.0 for i in range(0, 30)]
+            # inputs = inputs.type(torch.float64)
+            last_batch = batch_idx == last_idx
+            if not args.prefetcher or args.dataset != 'imnet':
+                inputs = inputs.type(torch.FloatTensor).cuda()
+                target = target.cuda()
+                inputs_two = inputs_two.type(torch.FloatTensor).cuda()
+
+            with amp_autocast():
+                with torch.no_grad():
+                    output_a = model_a(inputs)
+                    margin = len(features_out_hook) // args.step
+                    for i in range(0, margin):
+                        for j in range(0, args.step):
+                            features_a_out_hook[i] += features_out_hook[i + j * margin]
+                        features_a_out_hook[i] /= args.step
+                    features_out_hook = []
+
+            with amp_autocast():
+                with torch.no_grad():
+                    output_b = model_b(inputs_two)  # inputs_two
+                    features_b_out_hook = [0.0 for i in range(0, 30)]
+                    margin = len(features_out_hook) // args.step
+                    for i in range(0, margin):
+                        for j in range(0, args.step):
+                            features_b_out_hook[i] += features_out_hook[i + j * margin]
+                        features_b_out_hook[i] /= args.step
+                    features_out_hook = []
+
+
+            if False:
+                # 将Tensor转换为numpy数组，以便用matplotlib绘制
+                tensor_a = model_a.feature[0].node.mem.cpu().reshape(-1).numpy()
+                tensor_b = model_b.feature[0].node.mem.cpu().reshape(-1).numpy()
+
+                # 使用scipy's gaussian_kde来估计PDF
+                kde_a = stats.gaussian_kde(tensor_a)
+                kde_b = stats.gaussian_kde(tensor_b)
+
+                # 定义要在其上绘制PDF的值的范围
+                len_va = 4 * 64 * 48 * 48 // 100
+                x_a = np.linspace(tensor_a.min(), tensor_a.max(), len_va)
+                x_b = np.linspace(tensor_b.min(), tensor_b.max(), len_va)
+
+                # 计算每个值的PDF
+                print("calculate pdf")
+                pdf_a = kde_a.evaluate(x_a)
+                pdf_b = kde_b.evaluate(x_b)
+
+                # 使用matplotlib的plot函数绘制PDF
+                plt.bar(x_a, pdf_a, width=(tensor_a.max() - tensor_a.min()) / float(len_va))
+                plt.xlabel('Membrane potential value', fontsize=18)
+                plt.ylabel('Density', fontsize=18)
+                # plt.title('Distribution of membrane potential trained on DVS')
+                plt.grid(True)
+                plt.savefig('mem_caltech101.svg', dpi=600)
+
+                plt.figure()
+
+                # 使用matplotlib的plot函数绘制PDF
+                plt.bar(x_b, pdf_b, width=(tensor_b.max() - tensor_b.min()) / float(len_va))
+                plt.xlabel('Membrane potential value', fontsize=18)
+                plt.ylabel('Density', fontsize=18)
+                # plt.title('Distribution of membrane potential trained on RGB')
+                plt.grid(True)
+                plt.savefig('mem_ncaltech101.svg', dpi=600)
+                print("mem plot finished!")
+                sys.exit()
+
+            for i in range(0, 30):
+                for j in range(0, 30):
+                    tmp_a, tmp_b = \
+                        CKA.linear_CKA(features_a_out_hook[i].view(args.batch_size, -1),
+                                       features_b_out_hook[j].view(args.batch_size, -1))
+                    scaled_hsic[batch_idx][i][j] = tmp_a.cpu()
+                    normalization_d[batch_idx][i][j] = tmp_b.cpu()
+
+            torch.cuda.empty_cache()
+
+        with amp_autocast():
+            # features_a_used = [0.0 for i in range(0, 30)]
+            # features_b_used = [0.0 for i in range(0, 30)]
+
+            # for i in range(0, 30):
+            #     tmp_list = []
+            #     for j in range(0, repeat):
+            #         tmp_list.append(features_a_out[j][i])
+            #     features_a_used[i] = torch.cat(tmp_list, dim=0)
+            #
+            # for i in range(0, 30):
+            #     tmp_list = []
+            #     for j in range(0, repeat):
+            #         tmp_list.append(features_b_out[j][i])
+            #     features_b_used[i] = torch.cat(tmp_list, dim=0)
+
+            cka = torch.zeros((30, 30))
+            for i in range(0, 30):
+                for j in range(0, 30):
+                    cka[i][j] = torch.sum(scaled_hsic, dim=0)[i][j] / (torch.sum(normalization_d, dim=0)[i][j] + 1e-7)
+            torch.save(cka, "./mycka_{}_{}.pt".format(args.dataset, args.dataset_two))
+    return None
+
 
 if __name__ == '__main__':
-    main()
+    torch.set_num_threads(20)
+    os.environ["OMP_NUM_THREADS"] = "20"  # 设置OpenMP计算库的线程数
+    os.environ["MKL_NUM_THREADS"] = "20"  # 设置MKL-DNN CPU加速库的线程数。
+    # main()
+
+    if True:
+        sns.set_context("notebook", font_scale=1,
+                        rc={"lines.linewidth": 2.5})
+
+        os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+        color_lib = sns.color_palette()
+
+        plt.rcParams['font.family'] = 'DejaVu Sans'
+        plt.rcParams['font.size'] = 16
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # data = np.random.rand(20,20)
+        data = torch.load("./mycka_NCALTECH101_CALTECH101.pt")
+        # data = torch.load("./mycka_dvsc10_cifar10.pt")
+        cka_diagonal = []
+        for i in range(0, 30):
+            cka_diagonal.append(data[i][i])
+
+        ax.xaxis.set_major_locator(MultipleLocator(1))
+        ax.set_xlim([0, 30])
+
+        h = sns.heatmap(data, cmap='inferno', xticklabels=5, yticklabels=5, cbar=False, vmin=0, vmax=1)
+        h.invert_yaxis()
+        cb=h.figure.colorbar(h.collections[0]) #显示colorbar
+        cb.ax.tick_params(labelsize=16) #设置colorbar刻度字体大小
+        # cb.set_label('colorbar')
+        cb.set_ticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        # cb.locator = matplotlib.ticker.MaxNLocator(nbins=6)
+        cb.update_ticks()
+        ax.tick_params(bottom=False, top=False, left=False, right=False)
+
+        plt.xlabel('DVS trained SNN',fontsize=18, color='k') #x轴label的文本和字体大小
+        args, args_text = _parse_args()
+        if args.dataset_two == "dvsc10":
+            plt.ylabel('DVS trained SNN',fontsize=18, color='k') #y轴label的文本和字体大小
+        else:
+            plt.ylabel('RGB trained SNN', fontsize=18, color='k')  # y轴label的文本和字体大小
+
+        # plt.title('NCALTECH101',fontsize=20) #图片标题文本和字体大小
+
+        plt.savefig('mycka_NCALTECH101_CALTECH101.svg', dpi=600)  # 图表输出
+        # plt.savefig('mycka_dvsc10_cifar10.svg', dpi=600)  # 图表输出
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(range(0, 30), cka_diagonal, '*', linewidth=2, linestyle="dashdot")
+        # ax.legend(bbox_to_anchor=(1, 1), loc=1, fontsize=13)
+        plt.xlabel('Layers', fontsize=18)
+        plt.ylabel('Similarity', fontsize=18)
+        ax.set_xlim([0, 29])
+        plt.savefig('centercka_NCALTECH101_CALTECH101.svg', dpi=600)  # 图表输出

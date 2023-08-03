@@ -43,7 +43,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy, JsdCro
 from timm.optim import create_optimizer
 from timm.scheduler import create_scheduler
 from timm.utils import ApexScaler, NativeScaler
-
+import tonic
 # from ptflops import get_model_complexity_info
 # from thop import profile, clever_format
 
@@ -131,7 +131,7 @@ parser.add_argument('--warmup-lr', type=float, default=1e-6, metavar='LR',
                     help='warmup learning rate (default: 0.0001)')
 parser.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',
                     help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
-parser.add_argument('--epochs', type=int, default=600, metavar='N',
+parser.add_argument('--epochs', type=int, default=300, metavar='N',
                     help='number of epochs to train (default: 2)')
 parser.add_argument('--start-epoch', default=None, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -254,7 +254,7 @@ parser.add_argument('--pin-mem', action='store_true', default=False,
                     help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
 parser.add_argument('--no-prefetcher', action='store_true', default=False,
                     help='disable fast prefetcher')
-parser.add_argument('--output', default='/home/hexiang/TransferLearning_For_DVS/Results_lastest/', type=str, metavar='PATH',
+parser.add_argument('--output', default='/home/hexiang/DomainAdaptation_DVS/Results/', type=str, metavar='PATH',
                     help='path to output folder (default: none, current dir)')
 parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_METRIC',
                     help='Best metric (default: "top1"')
@@ -353,6 +353,10 @@ parser.add_argument('--DVS-DA', action='store_true',
 parser.add_argument('--traindata-ratio', default=1.0, type=float,
                     help='training data ratio')
 
+# train rgb data used ratio
+parser.add_argument('--rgbdata-ratio', default=1.0, type=float,
+                    help='training data ratio')
+
 # snr value
 parser.add_argument('--snr', default=0, type=int,
                     help='random noise amplitude controled by snr, 0 means no noise')
@@ -361,8 +365,15 @@ parser.add_argument('--snr', default=0, type=int,
 parser.add_argument('--m', default=-1.0, type=float,
                     help='margin')
 
+parser.add_argument('--no-use-hsv', action='store_true',
+                    help='do not use hsv')
+
+parser.add_argument('--no-sliding-training', action='store_true',
+                    help='use sliding training')
+
+mnist_input_list = []
 source_input_list, source_label_list = [], []
-CALTECH101_list, ImageNet_list = [], []
+CALTECH101_list, ImageNet_list, CEPDVS_list = [], [], []
 
 try:
     from apex import amp
@@ -417,15 +428,15 @@ def main():
             "ls_{}".format(args.smoothing),
             "lr_{}".format(args.lr),
             "m_{}".format(args.m),
-            "domainLoss_{}".format(args.domain_loss),
-            "semanticLoss_{}".format(args.semantic_loss),
-            "domain_loss_coefficient{}".format(args.domain_loss_coefficient),
-            "semantic_loss_coefficient{}".format(args.semantic_loss_coefficient),
+            "domainLoss_{}_coefficient{}".format(args.domain_loss, args.domain_loss_coefficient),
+            "semanticLoss_{}_coefficient{}".format(args.semantic_loss, args.semantic_loss_coefficient),
             "traindataratio_{}".format(args.traindata_ratio),
-            "TETfirst_{}".format(args.TET_loss_first),
-            "TETsecond_{}".format(args.TET_loss_second),
+            "rgbdataratio_{}".format(args.rgbdata_ratio),
+            "TET_loss_{}".format(args.TET_loss_first and args.TET_loss_second),
+            "hsv_{}".format(not args.no_use_hsv),
+            "sl_{}".format(not args.no_sliding_training)
         ])
-        output_dir = get_outdir(output_base, 'train_TCKA_test', exp_name)
+        output_dir = get_outdir(output_base, 'train_DomainAdaptation', exp_name)
         args.output_dir = output_dir
         setup_default_logging(log_path=os.path.join(output_dir, 'log.txt'))
 
@@ -629,7 +640,7 @@ def main():
 
     # now config only for imnet
     data_config = resolve_data_config(vars(args), model=model, verbose=False)
-    source_loader_train, _, _, _ = eval('get_transfer_%s_data' % args.source_dataset)(
+    source_loader_train, source_loader_list, _, _ = eval('get_transfer_%s_data' % args.source_dataset)(
         batch_size=args.batch_size,
         step=args.step,
         args=args,
@@ -651,6 +662,7 @@ def main():
         randaug_m=args.randaug_m,
         portion=args.train_portion,
         _logger=_logger,
+        no_use_hsv=args.no_use_hsv
     )
 
 
@@ -684,25 +696,41 @@ def main():
         data_type="frequency"
     )
 
-    global source_input_list, source_label_list, CALTECH101_list, ImageNet_list
-    if args.target_dataset == "dvsc10" or args.target_dataset == "NCALTECH101" or args.target_dataset == "nomni":  # ImageNet中回来的loader其实是数据集,在后面处理
+    global source_input_list, source_label_list, CALTECH101_list, ImageNet_list,  mnist_input_list, CEPDVS_list
+    if args.target_dataset == "dvsc10" or args.target_dataset == "NCALTECH101" \
+            or args.target_dataset == "nomni" or args.target_dataset == "nmnist" or args.target_dataset == "CEPDVS":  # ImageNet中回来的loader其实是数据集,在后面处理
         source_input_list, source_label_list = next(iter(source_loader_train))
+        # for i in range(30001, 30005):
+        #     # vis origin picture
+        #     plt.figure()
+        #     plt.imshow(source_input_list[i].permute(1, 2, 0).numpy())
+        #     plt.savefig("./origin_image.jpg")
+        #     plt.show()
+        # vis HSV picture
+        # for i in range(30001, 30005):  # 30001.i
+        #     convertor = RGB_HSV()
+        #     plt.figure()
+        #     plt.imshow(convertor.rgb_to_hsv(source_input_list)[i, :, :, :].permute(1, 2, 0).numpy())
+        #     plt.title("HSV image")
+        #     plt.show()
+    CALTECH101_list = source_loader_list
+    CEPDVS_list = source_loader_list
 
-    if args.source_dataset == "CALTECH101":
-        cls_count = [438, 435, 200, 791, 49, 800, 41, 34, 45, 50, 45, 32, 128, 84, 38, 81, 86, 47, 40, 0, 45, 58, 61,
-                     105, 47, 64, 70, 68, 50, 51, 54, 67, 51, 64, 65, 72, 62, 52, 60, 83, 65, 67, 45, 31, 34, 49, 99,
-                     100, 42, 54, 86, 80, 30, 62, 86, 110, 61, 79, 77, 40, 65, 42, 35, 77, 31, 74, 49, 32, 39, 47, 35,
-                     43, 52, 34, 54, 69, 58, 45, 38, 57, 34, 84, 57, 31, 54, 45, 82, 56, 63, 35, 85, 43, 82, 74, 239,
-                     37, 53, 33, 55, 29, 42]
-        CALTECH101_list = [0] * 102  # 多开了一类, 方便计算
-        for i in range(1, len(cls_count) + 1):
-            CALTECH101_list[i] = CALTECH101_list[i - 1] + cls_count[i - 1]
+    if args.source_dataset == "mnist":
+        from torchvision.datasets import MNIST
 
-    if args.source_dataset == "NCALTECH101":
-        cls_count = tonic.datasets.NCALTECH101.cls_count
-        CALTECH101_list = [0] * 102  # 多开了一类, 方便计算
-        for i in range(1, len(cls_count) + 1):
-            CALTECH101_list[i] = CALTECH101_list[i - 1] + cls_count[i - 1]
+        # 加载MNIST训练集
+        dataset = MNIST(root=DATA_DIR, train=True, download=True)
+
+        # 获取所有的标签
+        labels = dataset.targets
+
+        # 统计每个标签的样本数量
+        counts = torch.bincount(labels)
+
+        mnist_input_list = [0] * 11  # 多开了一类, 方便计算
+        for i in range(1, len(counts) + 1):
+            mnist_input_list[i] = mnist_input_list[i - 1] + counts[i - 1]
 
     if args.source_dataset == "imnet":
         cls_count = [1300] * 1000  # 1000类
@@ -835,9 +863,6 @@ def main():
                 save_metric = eval_metrics[eval_metric]
                 best_metric, best_epoch = saver.save_checkpoint(epoch, metric=save_metric)
 
-            # if epoch == 299:  # 临时的
-            #     break
-
     except KeyboardInterrupt:
         pass
     if best_metric is not None:
@@ -862,7 +887,6 @@ def train_epoch(
     semantic_losses_m = AverageMeter()
     rgb_losses_m = AverageMeter()
     dvs_losses_m = AverageMeter()
-    closses_m = AverageMeter()
     top1_m = AverageMeter()
     top5_m = AverageMeter()
 
@@ -874,31 +898,26 @@ def train_epoch(
     convertor = RGB_HSV()
 
     batch_len = len(target_loader)
-    if args.target_dataset == "dvsc10":
-        set_MaxReplacement_epoch = 0.5 * args.epochs
-    else:
-        set_MaxReplacement_epoch = 0.5 * args.epochs
+    set_MaxReplacement_epoch = 1.0 * args.epochs
     P_Replacement = 0.0
 
-    global source_input_list, source_label_list, CALTECH101_list, ImageNet_list
+    global source_input_list, source_label_list, CALTECH101_list, ImageNet_list,  mnist_input_list, CEPDVS_list
     for batch_idx, (inputs, label) in enumerate(target_loader):
         P_Replacement = ((batch_idx + epoch * batch_len) / (set_MaxReplacement_epoch * batch_len)) ** 3
         P_Replacement = P_Replacement if P_Replacement <= 1.0 else 1.0
+        if args.no_sliding_training:
+            P_Replacement = 0.0
         sampler_list = label.tolist()
-        if args.target_dataset == "dvsc10" and args.source_dataset == "cifar10":
-            sampler_list = torch.tensor(sampler_list) * 6000 + torch.randint(0, 6000, (len(sampler_list),))
-        elif args.target_dataset == "dvsc10" and args.source_dataset == "dvsc10":
-            sampler_list = torch.tensor(sampler_list) * 900 + torch.randint(0, 900, (len(sampler_list),))
+        if args.target_dataset == "nmnist":
+            tmp_sampler_list = []
+            for idx, label_sampler in enumerate(sampler_list):
+                tmp_sampler_list.append(torch.randint(mnist_input_list[label_sampler],
+                                                      mnist_input_list[label_sampler + 1] + 1, (1,)).item())
         elif args.target_dataset == "NCALTECH101":
             tmp_sampler_list = []
-            idx_list = []
             for idx, label_sampler in enumerate(sampler_list):
-                if label_sampler == 19:
-                    tmp_sampler_list.append(0)
-                    idx_list.append(idx)
-                else:
-                    tmp_sampler_list.append(torch.randint(CALTECH101_list[label_sampler],
-                                                          CALTECH101_list[label_sampler + 1], (1,)).item())
+                tmp_sampler_list.append(torch.randint(CALTECH101_list[label_sampler][0],
+                                                          CALTECH101_list[label_sampler][1] + 1, (1,)).item())
         elif args.target_dataset == "esimnet":
             tmp_sampler_list = []
             for idx, label_sampler in enumerate(sampler_list):  # 这里的label_sampler是一个列表
@@ -906,12 +925,18 @@ def train_epoch(
                                                       ImageNet_list[label_sampler + 1], (1,)).item())
         elif args.target_dataset == "nomni":
             sampler_list = torch.tensor(sampler_list) * 20 + torch.randint(0, 20, (len(sampler_list),))
+        elif args.target_dataset == "CEPDVS":
+            tmp_sampler_list = []
+            for idx, label_sampler in enumerate(sampler_list):
+                tmp_sampler_list.append(np.random.choice(CEPDVS_list[label_sampler]))
 
         source_input, source_label = [], []
         if args.target_dataset == "dvsc10":
             source_input, source_label = source_input_list[sampler_list], source_label_list[sampler_list]
-        if args.target_dataset == "NCALTECH101":
+        if args.target_dataset == "NCALTECH101" or args.target_dataset == "nmnist":
             source_input, source_label = source_input_list[tmp_sampler_list], source_label_list[tmp_sampler_list]
+        if args.target_dataset == "CEPDVS":
+            source_input = source_input_list[tmp_sampler_list]
         if args.target_dataset == "esimnet":
             train_dataset = source_loader  # 给传回来的重新命个名儿
             source_loader_used = torch.utils.data.DataLoader(
@@ -921,7 +946,7 @@ def train_epoch(
             source_input, source_label = next(iter(source_loader_used))
         if args.target_dataset == "nomni":
             source_input, source_label = source_input_list[sampler_list], source_label_list[sampler_list]
-        # for i in range(10):
+        # for i in range(128):
         #     # vis origin picture
         #     plt.figure()
         #     plt.imshow(source_input[i].permute(1, 2, 0))
@@ -935,11 +960,8 @@ def train_epoch(
         # plt.show()
 
         # source_input = convertor.rgb_to_hsv(source_input)[:, -1, :, :].unsqueeze(1).repeat(1, args.step * 2, 1, 1)
-        if args.source_dataset == "dvsc10" or args.source_dataset == "NCALTECH101":
-            pass
-        else:
-            source_input = source_input[:, -1, :, :].unsqueeze(1).repeat(1, args.step * 2, 1, 1)
-            source_input = rearrange(source_input, 'b (t c) h w -> b t c h w', t=args.step)
+        source_input = source_input[:, -1, :, :].unsqueeze(1).repeat(1, args.step * 2, 1, 1)
+        source_input = rearrange(source_input, 'b (t c) h w -> b t c h w', t=args.step)
 
         for b in range(source_input.shape[0]):
             if rd.uniform(0, 1) <= P_Replacement:
@@ -952,9 +974,6 @@ def train_epoch(
         #     plt.title("HSV image for v channel")
         #     plt.show()
 
-        if args.target_dataset == "NCALTECH101" and len(idx_list) > 0:
-            for i in range(len(idx_list)):
-                source_input[idx_list[i]] = inputs[idx_list[i]]
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
         if not args.prefetcher or args.target_dataset != 'imnet':
@@ -987,15 +1006,15 @@ def train_epoch(
             for i in range(len(domain_rbg_list)):
                 semantic_loss += torch.abs(CKA.linear_CKA(domain_dvs_list[i].view(args.batch_size, -1), semantic_rbg_list[i].view(args.batch_size, -1)))
             semantic_loss /= len(domain_rbg_list)
-            if args.target_dataset == "dvsc10":
-                m = 0.1
+            if args.target_dataset == "CEPDVS":
+                m = 0.0
             elif args.target_dataset == "NCALTECH101":
                 m = 0.3
             else:
                 m = 0.2
             if args.m >= 0.0:
                 m = args.m
-            if semantic_loss.item() - m < 0:
+            if semantic_loss.item() - m <= 0:
                 semantic_loss = torch.tensor(0., device=semantic_loss.device)
 
             # if args.domain_loss_after:
@@ -1038,15 +1057,14 @@ def train_epoch(
                 loss_rgb = loss_fn(output_rgb, label)
                 loss_dvs = loss_fn(output_dvs, label)
 
-            loss = 0 * loss_rgb + loss_dvs
+            loss = loss_rgb + loss_dvs
             if args.domain_loss:
-                loss += args.domain_loss_coefficient * domain_loss
-            if args.semantic_loss and epoch <= set_MaxReplacement_epoch:
-                if args.target_dataset == "NCALTECH101" and epoch <= set_MaxReplacement_epoch * 0.66:
-                    # loss += args.semantic_loss_coefficient * semantic_loss * math.pow(10, -1.0 * float(set_MaxReplacement_epoch / (epoch+1)))
+                if args.no_sliding_training:
                     pass
                 else:
-                    loss += args.semantic_loss_coefficient * semantic_loss
+                    loss += args.domain_loss_coefficient * domain_loss
+            if args.semantic_loss:
+                loss += args.semantic_loss_coefficient * semantic_loss * (1 - P_Replacement)
 
         if not (args.cut_mix | args.mix_up | args.event_mix) and args.target_dataset != 'imnet':
             acc1, acc5 = accuracy(output_dvs, label, topk=(1, 5))
@@ -1067,7 +1085,6 @@ def train_epoch(
             dvs_losses_m.update(loss_dvs.item(), inputs.size(0))
             top1_m.update(acc1.item(), inputs.size(0))
             top5_m.update(acc5.item(), inputs.size(0))
-            closses_m.update(closs.item(), inputs.size(0))
 
             spike_rate_avg_layer = model.get_fire_rate().tolist()
             spike_rate_avg_layer_str = ['{:.3f}'.format(i) for i in spike_rate_avg_layer]
@@ -1110,65 +1127,48 @@ def train_epoch(
             if args.distributed:
                 reduced_loss = reduce_tensor(loss.data, args.world_size)
                 losses_m.update(reduced_loss.item(), inputs.size(0))
-                closses_m.update(reduced_loss.item(), inputs.size(0))
 
             if args.local_rank == 0:
                 if args.distributed:
                     _logger.info(
                         'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
                         'Loss: {loss.val:>9.6f} ({loss.avg:>6.4f})  '
-                        'cLoss: {closs.val:>9.6f} ({closs.avg:>6.4f})  '
                         'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
                         'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})  '
                         'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
                         '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
-                        'LR: {lr:.3e}  '
-                        'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
+                        'LR: {lr:.3e}  '.format(
                             epoch,
                             batch_idx, len(target_loader),
                             100. * batch_idx / last_idx,
                             loss=losses_m,
-                            closs=closses_m,
                             top1=top1_m,
                             top5=top5_m,
                             batch_time=batch_time_m,
                             rate=inputs.size(0) * args.world_size / batch_time_m.val,
                             rate_avg=inputs.size(0) * args.world_size / batch_time_m.avg,
-                            lr=lr,
-                            data_time=data_time_m
+                            lr=lr
                         ))
                 else:
                     _logger.info(
                         'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
                         'Loss: {loss.val:>9.6f} ({loss.avg:>6.4f})  '
-                        'cLoss: {closs.val:>9.6f} ({closs.avg:>6.4f})  '
                         'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
                         'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})  '
                         'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
                         '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
                         'LR: {lr:.3e}  '
-                        'Data: {data_time.val:.3f} ({data_time.avg:.3f})\n'
-                        'Fire_rate: {spike_rate}\n'
-                        'Thres: {threshold}\n'
-                        'Mu: {mu_str}\n'
-                        'Sigma: {sigma_str}\n'
                         'P_Replacement: {P_Replacement}\n'.format(
                             epoch,
                             batch_idx, len(target_loader),
                             100. * batch_idx / last_idx,
                             loss=losses_m,
-                            closs=closses_m,
                             top1=top1_m,
                             top5=top5_m,
                             batch_time=batch_time_m,
                             rate=inputs.size(0) * args.world_size / batch_time_m.val,
                             rate_avg=inputs.size(0) * args.world_size / batch_time_m.avg,
                             lr=lr,
-                            data_time=data_time_m,
-                            spike_rate=spike_rate_avg_layer_str,
-                            threshold=threshold_str,
-                            mu_str=mu_str,
-                            sigma_str=sigma_str,
                             P_Replacement=P_Replacement,
                         ))
 
@@ -1333,12 +1333,7 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
                         'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
                         'cLoss: {closs.val:>7.4f} ({closs.avg:>6.4f})  '
                         'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})'
-                        'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})\n'
-                        'Fire_rate: {spike_rate}\n'
-                        'Tot_spike: {tot_spike}\n'
-                        'Thres: {threshold}\n'
-                        'Mu: {mu_str}\n'
-                        'Sigma: {sigma_str}\n'.format(
+                        'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})\n'.format(
                             log_name,
                             batch_idx,
                             last_idx,
@@ -1347,11 +1342,6 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
                             closs=closses_m,
                             top1=top1_m,
                             top5=top5_m,
-                            spike_rate=spike_rate_avg_layer_str,
-                            tot_spike=tot_spike,
-                            threshold=threshold_str,
-                            mu_str=mu_str,
-                            sigma_str=sigma_str
                         ))
 
     # metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])

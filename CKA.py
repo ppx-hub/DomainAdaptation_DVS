@@ -115,7 +115,7 @@ def linear_CKA(gram_x, gram_y, debiased=False):
     normalization_x = torch.norm(gram_x)
     normalization_y = torch.norm(gram_y)
     return scaled_hsic[0, 0] / (normalization_x * normalization_y + 1e-7)
-
+    # return torch.abs(scaled_hsic[0, 0]), torch.abs(normalization_x * normalization_y)
 
 def rbf_CKA(gram_x, gram_y, debiased=False):
     """Compute CKA.

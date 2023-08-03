@@ -979,6 +979,17 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
 
 
 if __name__ == '__main__':
-    main()
-    plt.plot(np.arange(1, 301), lr_list)
+    # main()
+    # plt.plot(np.arange(1, 301), lr_list)
+    # plt.show()
+    set_MaxReplacement_epoch = 300
+    batch_len = 41
+    P_Replacement = 0.0
+    P_list = []
+    for epoch in range(set_MaxReplacement_epoch):
+        for batch_idx in range(batch_len):
+            P_Replacement = ((batch_idx + epoch * batch_len) / (set_MaxReplacement_epoch * batch_len)) ** 4
+        P_list.append(P_Replacement)
+    plt.plot(np.arange(1, 301), P_list)
     plt.show()
+

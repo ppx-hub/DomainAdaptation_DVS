@@ -4,6 +4,8 @@
 # FileName: main_visual_losslandscape.py
 # Explain:
 # Software: PyCharm
+import sys
+
 import tqdm
 
 from loss_landscape.plot_surface import *
@@ -645,6 +647,7 @@ def main():
         data_type="frequency"
     )
 
+    model_before = deepcopy(model)
     if args.eval:  # evaluate the model
         if args.distributed:
             state_dict = torch.load(args.eval_checkpoint)['state_dict_ema']
@@ -656,13 +659,105 @@ def main():
 
             model.load_state_dict(new_state_dict)
         else:
-            model.load_state_dict(torch.load(args.eval_checkpoint, map_location='cpu')['state_dict'])
+            model.load_state_dict(torch.load('/home/hexiang/TransferLearning_For_DVS/Results_lastest/train_TCKA_test/Transfer_VGG_SNN-dvsc10-10-bs_120-seed_42-DA_True-ls_0.0-lr_0.005-SNR_0-domainLoss_False-semanticLoss_False-domain_loss_coefficient1.0-semantic_loss_coefficient0.5-traindataratio_1.0-TETfirst_True-TETsecond_True/model_best.pth.tar', map_location='cpu')['state_dict'])
             # pass
             # print("no model load")
         # --------------------------------------------------------------------------
         # Show Acc
         # --------------------------------------------------------------------------
         print("load model finished!")
+
+
+    # """ python cam.py -image-path <path_to_image>
+    # Example usage of loading an image, and computing:
+    #     1. CAM
+    #     2. Guided Back Propagation
+    #     3. Combining both
+    # """
+    #
+    # # Choose the target layer you want to compute the visualization for.
+    # # Usually this will be the last convolutional layer in the model.
+    # # Some common choices can be:
+    # # Resnet18 and 50: model.layer4
+    # # VGG, densenet161: model.features[-1]
+    # # mnasnet1_0: model.layers[-1]
+    # # You can print the model to help chose the layer
+    # # You can pass a list with several target layers,
+    # # in that case the CAMs will be computed per layer and then aggregated.
+    # # You can also try selecting all layers of a certain type, with e.g:
+    # # from pytorch_grad_cam.utils.find_layers import find_layer_types_recursive
+    # # find_layer_types_recursive(model, [torch.nn.ReLU])
+    # target_layers = [model.feature[-1]]
+    #
+    if True:
+        # inputs = 0.0
+        # label = 0.0
+        # for batch_idx, (inputs_tmp, label_tmp) in tqdm.tqdm(enumerate(origin_loader_train)):
+        #     if batch_idx == choose_idx:
+        #         inputs = inputs_tmp
+        #         label = label_tmp
+        #         break
+        #     else:
+        #         continue
+        inputs = 0.0
+        rgb_img = 0.0
+
+        #Using the with statement ensures the context is freed, and you can
+        #recreate different CAM objects in a loop.
+        plt.figure(figsize=(8, 6))
+        plt.xlabel('w (pixel)')
+        plt.ylabel('h (pixel)')
+        cam_algorithm = GradCAMPlusPlus
+        model = model.cuda()
+        with cam_algorithm(model=model,
+                           target_layers=target_layers,
+                           use_cuda=False) as cam:
+
+            # AblationCAM and ScoreCAM have batched implementations.
+            # You can override the internal batch size for faster computation.
+            cam.batch_size = 32
+
+            for batch_idx, (origin_loaer, target_loader) in tqdm.tqdm(enumerate(zip(origin_loader_train, target_loader_train))):
+
+                twodemension_inputs, labels = origin_loaer
+                plt.figure(figsize=(8, 6))
+                # plt.xlabel('w (pixel)')
+                # plt.ylabel('h (pixel)')
+                twodemension_inputs = twodemension_inputs[0]  # (1, 10, 2, 48, 48) -> (10, 2, 48, 48)
+                event_frame_plot_2d(twodemension_inputs)
+
+                inputs_tmp, label_tmp = target_loader
+                inputs = inputs_tmp
+                inputs = inputs.type(torch.FloatTensor).cuda()
+
+                grayscale_cam = cam(input_tensor=inputs,
+                                    targets=None,
+                                    aug_smooth=args.aug_smooth,
+                                    eigen_smooth=args.eigen_smooth)
+
+                # Here grayscale_cam has only one image in the batch
+                grayscale_cam = grayscale_cam[0, :]
+
+                # cam_image = show_cam_on_image(rgb_img.permute(1, 2, 0).numpy(), grayscale_cam, use_rgb=True, image_weight=0.0)
+                cam_image = show_cam_on_image(np.ones((48, 48, 3)), grayscale_cam, use_rgb=True,
+                                              image_weight=0.0)
+            # # cam_image is RGB encoded whereas "cv2.imwrite" requires BGR encoding.
+        # rgb_img = cv2.resize(rgb_img.permute(1, 2, 0).numpy(), (32, 32))
+
+                # cv2.imwrite(f'{args.method}_cam.jpg', cam_image)
+                plt.ylim(bottom=0.)
+                plt.axis('off')
+                plt.savefig('fig/gradcam_dvspic_origin/label_{}_id_{}.jpg'.format(labels.item(), 400 + batch_idx), bbox_inches='tight', pad_inches=0)
+                plt.imshow(cam_image, alpha=1.0)
+                # plt.show()
+                # plt.savefig('gradcam_pic/plot_id{}.jpg'.format(batch_idx), bbox_inches='tight')
+                plt.savefig('fig/gradcam_dvspic_withoutloss/label_{}_id_{}.jpg'.format(labels.item(), 400 + batch_idx), bbox_inches='tight', pad_inches=0)
+
+    # 第二次
+    print("load model again!")
+    model = model_before
+    model.load_state_dict(torch.load(
+        '/home/hexiang/TransferLearning_For_DVS/Results_lastest/train_TCKA_test/Transfer_VGG_SNN-dvsc10-10-bs_120-seed_42-DA_True-ls_0.0-lr_0.005-SNR_0-domainLoss_True-semanticLoss_True-domain_loss_coefficient1.0-semantic_loss_coefficient0.5-traindataratio_1.0-TETfirst_True-TETsecond_True/model_best.pth.tar', map_location='cpu')['state_dict'])
 
 
     """ python cam.py -image-path <path_to_image>
@@ -686,43 +781,25 @@ def main():
     # find_layer_types_recursive(model, [torch.nn.ReLU])
     target_layers = [model.feature[-1]]
 
-    # if args.target_dataset == "dvsc10" or args.target_dataset == "NCALTECH101" or args.target_dataset == "nomni":  # ImageNet中回来的loader其实是数据集,在后面处理
-    #     source_input_list, source_label_list = next(iter(source_loader_train))
-        # origin_input_list, origin_label_list = next(iter(origin_loader_train))
-
-
-    # for batch_idx, (target_loader_use, origin_loader_use) in enumerate(zip(target_loader_train, origin_loader_train)):
-    choose_idx = 5002  # 5012, 5002
     if True:
+        # inputs = 0.0
+        # label = 0.0
+        # for batch_idx, (inputs_tmp, label_tmp) in tqdm.tqdm(enumerate(origin_loader_train)):
+        #     if batch_idx == choose_idx:
+        #         inputs = inputs_tmp
+        #         label = label_tmp
+        #         break
+        #     else:
+        #         continue
         inputs = 0.0
-        label = 0.0
-        for batch_idx, (inputs_tmp, label_tmp) in tqdm.tqdm(enumerate(origin_loader_train)):
-            if batch_idx == choose_idx:
-                inputs = inputs_tmp
-                label = label_tmp
-                break
-            else:
-                continue
-
-        plt.figure(figsize=(8, 6))
-        plt.xlabel('w (pixel)')
-        plt.ylabel('h (pixel)')
-        rgb_img = inputs[0]  # (1, 10, 2, 48, 48) -> (10, 2, 48, 48)
-        event_frame_plot_2d(rgb_img)
-        rgb_img = rgb_img[0, 0, :, :].unsqueeze(0).repeat(3, 1, 1) / 255
-
-        for batch_idx, (inputs_tmp, label_tmp) in tqdm.tqdm(enumerate(target_loader_train)):
-            if batch_idx == choose_idx:
-                inputs = inputs_tmp
-                label = label_tmp
-                break
-            else:
-                continue
+        rgb_img = 0.0
 
         #Using the with statement ensures the context is freed, and you can
         #recreate different CAM objects in a loop.
+        plt.figure(figsize=(8, 6))
+        plt.xlabel('w (pixel)')
+        plt.ylabel('h (pixel)')
         cam_algorithm = GradCAMPlusPlus
-        inputs = inputs.type(torch.FloatTensor).cuda()
         model = model.cuda()
         with cam_algorithm(model=model,
                            target_layers=target_layers,
@@ -732,38 +809,41 @@ def main():
             # You can override the internal batch size for faster computation.
             cam.batch_size = 32
 
-            # grayscale_cam = cam(input_tensor=inputs,
-            #                     targets=[ClassifierOutputTarget(origin_label[0].item())],
-            #                     aug_smooth=args.aug_smooth,
-            #                     eigen_smooth=args.eigen_smooth)
+            for batch_idx, (origin_loaer, target_loader) in tqdm.tqdm(enumerate(zip(origin_loader_train, target_loader_train))):
 
-            grayscale_cam = cam(input_tensor=inputs,
-                                targets=None,
-                                aug_smooth=args.aug_smooth,
-                                eigen_smooth=args.eigen_smooth)
+                twodemension_inputs, labels = origin_loaer
+                plt.figure(figsize=(8, 6))
+                # plt.xlabel('w (pixel)')
+                # plt.ylabel('h (pixel)')
+                twodemension_inputs = twodemension_inputs[0]  # (1, 10, 2, 48, 48) -> (10, 2, 48, 48)
+                event_frame_plot_2d(twodemension_inputs)
 
-            # Here grayscale_cam has only one image in the batch
-            grayscale_cam = grayscale_cam[0, :]
+                inputs_tmp, label_tmp = target_loader
+                inputs = inputs_tmp
+                inputs = inputs.type(torch.FloatTensor).cuda()
 
-            # cam_image = show_cam_on_image(rgb_img.permute(1, 2, 0).numpy(), grayscale_cam, use_rgb=True, image_weight=0.0)
-            cam_image = show_cam_on_image(np.ones((48, 48, 3)), grayscale_cam, use_rgb=True,
-                                          image_weight=0.0)
+                grayscale_cam = cam(input_tensor=inputs,
+                                    targets=None,
+                                    aug_smooth=args.aug_smooth,
+                                    eigen_smooth=args.eigen_smooth)
+
+                # Here grayscale_cam has only one image in the batch
+                grayscale_cam = grayscale_cam[0, :]
+
+                # cam_image = show_cam_on_image(rgb_img.permute(1, 2, 0).numpy(), grayscale_cam, use_rgb=True, image_weight=0.0)
+                cam_image = show_cam_on_image(np.ones((48, 48, 3)), grayscale_cam, use_rgb=True,
+                                              image_weight=0.0)
             # # cam_image is RGB encoded whereas "cv2.imwrite" requires BGR encoding.
         # rgb_img = cv2.resize(rgb_img.permute(1, 2, 0).numpy(), (32, 32))
 
-        # cv2.imwrite(f'{args.method}_cam.jpg', cam_image)
-        plt.ylim(bottom=0.)
-        plt.savefig('plot_before{}.jpg', bbox_inches='tight')
-        plt.imshow(cam_image, alpha=1.0)
-        # plt.show()
-        # plt.axis('off')
-        # plt.show()
-        # plt.savefig('gradcam_pic/plot_id{}.jpg'.format(batch_idx), bbox_inches='tight')
-        plt.savefig('plot_after{}.jpg', bbox_inches='tight')
-
-        # if batch_idx == 500:
-        #     break
-
+                # cv2.imwrite(f'{args.method}_cam.jpg', cam_image)
+                plt.ylim(bottom=0.)
+                plt.axis('off')
+                # plt.savefig('fig/gradcam_dvspic_origin/label_{}_id_{}.jpg'.format(labels.item(), batch_idx), bbox_inches='tight', pad_inches=0)
+                plt.imshow(cam_image, alpha=1.0)
+                # plt.show()
+                # plt.savefig('gradcam_pic/plot_id{}.jpg'.format(batch_idx), bbox_inches='tight')
+                plt.savefig('fig/gradcam_dvspic_withloss/label_{}_id_{}.jpg'.format(labels.item(), batch_idx), bbox_inches='tight', pad_inches=0)
 
 def event_frame_plot_2d(event):
 
@@ -785,7 +865,7 @@ def event_frame_plot_2d(event):
             neg_x, neg_y, neg_c = np.split(np.array(neg_idx), 3, axis=1)
             # plt.scatter(48 - neg_x[:, 0] * 0.375, 48 - neg_y[:, 0] * 0.375, c='blue', alpha=1, s=1)
             plt.scatter(neg_x[:, 0] * 0.375, neg_y[:, 0] * 0.375, c='blue', alpha=1, s=1)
-    # plt.show()
+    # sys.exit()
 
 if __name__ == '__main__':
     main()

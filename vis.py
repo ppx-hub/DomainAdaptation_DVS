@@ -151,8 +151,8 @@ def get_dataloader_ncal(step, **kwargs):
     sensor_size = tonic.datasets.CIFAR10DVS.sensor_size
     transform = tonic.transforms.Compose([
         # tonic.transforms.DropPixel(hot_pixel_frequency=.999),
-        tonic.transforms.Denoise(500),
-        tonic.transforms.DropEvent(p=0.0),
+        tonic.transforms.Denoise(3000),
+        tonic.transforms.DropEvent(p=0.1),
         # tonic.transforms.ToFrame(sensor_size=sensor_size, n_time_bins=step),
         # lambda x: F.interpolate(torch.tensor(x, dtype=torch.float), size=[48, 48], mode='bilinear', align_corners=True),
     ])
@@ -275,9 +275,9 @@ def event_vis_raw_1d(x):
     # ax.set_zticks([])
     # ax.scatter(x_pos[pos_idx, 2], 48 - x_pos[pos_idx, 0], 48 - x_pos[pos_idx, 1], color='red', alpha=0.3, s=1.)
     # ax.scatter(x_neg[neg_idx, 2], 48 - x_neg[neg_idx, 0], 48 - x_neg[neg_idx, 1], color='blue', alpha=0.3, s=1.)
-    # ax.scatter(64 - x_pos[:, 1] // 2, 128 - x_pos[:, 2], color='red', alpha=0.6, s=4)
-    # ax.scatter(64 - x_neg[:, 1] // 2, 128 - x_neg[:, 2], color='blue', alpha=0.6, s=4)
-    ax.scatter(x_pos[:, 1], x_pos[:, 2], color='red', alpha=0.6, s=4)
+    ax.scatter(48 - x_pos[:, 1] * 0.375, 48 - x_pos[:, 2] * 0.375, color='red', alpha=0.6, s=4)
+    ax.scatter(48 - x_neg[:, 1] * 0.375, 48 - x_neg[:, 2] * 0.375, color='blue', alpha=0.6, s=4)
+    # ax.scatter(x_pos[:, 1], x_pos[:, 2], color='red', alpha=0.6, s=4)
 
 
 def event_vis_raw(x):
@@ -375,12 +375,14 @@ def event_frame_plot_2d(event, s=''):
 dataset = get_dataloader_ncal(100, event_mix=False, beta=1., prob=1., num_classes=10, noise=0., num=1)
 # dataset, _, _, _ = get_dvsc10_data()
 
-# for i in range(6879, 6881):
+# from tqdm import tqdm
+# for i in tqdm(range(5000, 6000)):
 #     img1, label = dataset[i]
 #     ax = event_vis_raw_1d(img1)
-#     plt.show()
-#     ax = event_vis_raw(img1)
-#     plt.show()
+#     plt.savefig('fig/temp_fig/dog_{}.jpg'.format(i-5000))
+    # plt.show()
+    # ax = event_vis_raw(img1)
+    # plt.show()
 
 # for batch_idx, (inputs, label) in enumerate(dataset):
 #     # inputs = torch.sum(torch.sum(inputs[0], dim=0), dim=0).unsqueeze(0).repeat(3, 1, 1)
@@ -390,18 +392,18 @@ dataset = get_dataloader_ncal(100, event_mix=False, beta=1., prob=1., num_classe
 #     plt.imshow(inputs)
 #     plt.axis('off')
 #     plt.show()
-#     # ax = event_vis_raw_1d(inputs)
-img1, label = dataset[5897]
+    # ax = event_vis_raw_1d(inputs)
+img1, label = dataset[5498]
 ax = event_vis_raw_1d(img1)
 plt.show()
 ax = event_vis_raw(img1)
 plt.show()
-
-img1, label = dataset[7801]
-ax = event_vis_raw_1d(img1)
-plt.show()
-ax = event_vis_raw(img1)
-plt.show()
+#
+# img1, label = dataset[7801]
+# ax = event_vis_raw_1d(img1)
+# plt.show()
+# ax = event_vis_raw(img1)
+# plt.show()
 
 
 # for idx, (img1, label) in enumerate(dataset):

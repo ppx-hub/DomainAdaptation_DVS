@@ -1,12 +1,3 @@
-# encoding: utf-8
-# Author    : Floyed<Floyed_Shen@outlook.com>
-# Datetime  : 2022/7/26 19:33
-# User      : Floyed
-# Product   : PyCharm
-# Project   : braincog
-# File      : resnet19_snn.py
-# explain   :
-
 import os
 import sys
 from functools import partial

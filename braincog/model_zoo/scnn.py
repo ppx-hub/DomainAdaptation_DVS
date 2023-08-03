@@ -1,9 +1,3 @@
-# -*- coding: utf-8 -*-            
-# Time : 2023/2/8 15:03
-# Author : Regulus
-# FileName: scnn.py
-# Explain:
-
 from functools import partial
 from torch.nn import functional as F
 import torchvision
@@ -27,7 +21,7 @@ class SCNN(BaseModule):
         super().__init__(step, encode_type, *args, **kwargs)
 
         self.n_preact = kwargs['n_preact'] if 'n_preact' in kwargs else False
-
+        self.TET_loss = kwargs['TET_loss'] if 'TET_loss' in kwargs else False
         self.num_classes = num_classes
 
         self.node = node_type
@@ -61,7 +55,7 @@ class SCNN(BaseModule):
         inputs = self.encoder(inputs)
         self.reset()
 
-        output = 0.0
+        outputs = []
         for t in range(self.step):
             # add encode output to list (firing rate)
             x = inputs[t]
@@ -72,9 +66,12 @@ class SCNN(BaseModule):
             x = x.view(x.shape[0], -1)
             x = self.fc1(x)
             x = self.node1(x)
-            output += self.fc2(x)
-        output /= self.step
-        return output
+            x = self.fc2(x)
+            outputs.append(x)
+        if self.TET_loss is True:
+            return outputs
+        else:
+            return sum(outputs) / len(outputs)
 
 
 @register_model

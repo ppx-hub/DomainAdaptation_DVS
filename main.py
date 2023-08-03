@@ -118,7 +118,7 @@ parser.add_argument('--warmup-lr', type=float, default=1e-6, metavar='LR',
                     help='warmup learning rate (default: 0.0001)')
 parser.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',
                     help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
-parser.add_argument('--epochs', type=int, default=600, metavar='N',
+parser.add_argument('--epochs', type=int, default=300, metavar='N',
                     help='number of epochs to train (default: 2)')
 parser.add_argument('--start-epoch', default=None, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -241,7 +241,7 @@ parser.add_argument('--pin-mem', action='store_true', default=False,
                     help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
 parser.add_argument('--no-prefetcher', action='store_true', default=False,
                     help='disable fast prefetcher')
-parser.add_argument('--output', default='/home/hexiang/TransferLearning_For_DVS/Results_lastest/', type=str, metavar='PATH',
+parser.add_argument('--output', default='/home/hexiang/DomainAdaptation_DVS/Results/', type=str, metavar='PATH',
                     help='path to output folder (default: none, current dir)')
 parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_METRIC',
                     help='Best metric (default: "top1"')
@@ -384,8 +384,8 @@ def main():
             "ls_{}".format(args.smoothing),
             "lr_{}".format(args.lr),
             "traindataratio_{}".format(args.traindata_ratio),
-            "TET_first_{}".format(args.TET_loss_first),
-            "TET_second_{}".format(args.TET_loss_second),
+            "TET_loss_{}".format(args.TET_loss_first and args.TET_loss_second),
+            "refined_{}".format(not args.eval_checkpoint == "" or not args.resume == "")
         ])
         output_dir = get_outdir(output_base, 'Baseline', exp_name)
         args.output_dir = output_dir
@@ -525,16 +525,15 @@ def main():
     if args.resume and args.eval_checkpoint == '':
         args.eval_checkpoint = args.resume
     if args.resume:
-        args.eval = True
+        # args.eval = True
         # checkpoint = torch.load(args.resume, map_location='cpu')
-        # model.load_state_dict(checkpoint['state_dict'], False)
-        resume_epoch = resume_checkpoint(
-            model, args.resume,
-            optimizer=None if args.no_resume_opt else optimizer,
-            loss_scaler=None if args.no_resume_opt else loss_scaler,
-            log_info=args.local_rank == 0)
-        # print(model.get_attr('mu'))
-        # print(model.get_attr('sigma'))
+        # model.load_state_dict(checkpoint['state_dict'], strict=True)
+        if args.eval is False:
+            resume_epoch = resume_checkpoint(
+                model, args.resume,
+                optimizer=None if args.no_resume_opt else optimizer,
+                loss_scaler=None if args.no_resume_opt else loss_scaler,
+                log_info=args.local_rank == 0)
 
     if args.critical_loss or args.spike_rate:
         model.set_requires_fp(True)
@@ -652,18 +651,32 @@ def main():
     best_metric = None
     best_epoch = None
 
-    if args.eval:  # evaluate the model
-        if args.distributed:
-            state_dict = torch.load(args.eval_checkpoint)['state_dict_ema']
-            new_state_dict = OrderedDict()
-            # add module prefix for DDP
-            for k, v in state_dict.items():
-                k = 'module.' + k
-                new_state_dict[k] = v
+    if args.eval_checkpoint != '':
+        from collections import OrderedDict
+        new_dict = OrderedDict()
+        old_dict = torch.load(args.eval_checkpoint, map_location=torch.device('cpu'))['state_dict']
+        for key in old_dict:
+            if key == "dvs_fc.1.weight":
+                new_dict["fc.1.weight"] = old_dict["dvs_fc.1.weight"]
+            elif key == "dvs_fc.1.bias":
+                new_dict["fc.1.bias"] = old_dict["dvs_fc.1.bias"]
+            elif key == "rgb_fc.1.weight":
+                pass
+            elif key == "rgb_fc.1.bias":
+                pass
+            elif key == "fc.1.weight":  # 仅仅不适用RGB的分类头
+                pass
+            elif key == "fc.1.bias":
+                pass
+            else:
+                new_dict[key] = old_dict[key]
+        for m in model.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.uniform_(m.weight, -0.1, 0.1)
+        model.load_state_dict(new_dict, strict=False)
+        print("load pre-trained model finished!")
 
-            model.load_state_dict(new_state_dict)
-        else:
-            model.load_state_dict(torch.load(args.eval_checkpoint)['state_dict'])
+    if args.eval:  # evaluate the model
         for i in range(1):
             val_metrics = validate(start_epoch, model, loader_eval, validate_loss_fn, args,
                                    visualize=args.visualize, spike_rate=args.spike_rate,
@@ -727,8 +740,9 @@ def main():
                 save_metric = eval_metrics[eval_metric]
                 best_metric, best_epoch = saver.save_checkpoint(epoch, metric=save_metric)
 
-            # if epoch == 299:  # 临时的
-            #     break
+            if args.dataset == "CALTECH101" or args.dataset == "mnist" or args.dataset == "RGBCEPDVS":  # RGB的一半预训练, 一半微调
+                if epoch == args.epochs / 2:
+                    break
 
     except KeyboardInterrupt:
         pass
@@ -750,7 +764,6 @@ def train_epoch(
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     losses_m = AverageMeter()
-    closses_m = AverageMeter()
     top1_m = AverageMeter()
     top5_m = AverageMeter()
 
@@ -773,6 +786,10 @@ def train_epoch(
         if args.channels_last:
             inputs = inputs.contiguous(memory_format=torch.channels_last)
         with amp_autocast():
+            if args.dataset == "cifar10" or args.dataset == "CALTECH101" or args.dataset == "RGBCEPDVS":
+                inputs = inputs[:, 0:2, :, :]
+            if args.dataset == "omni" or args.dataset == "mnist":
+                inputs = inputs.repeat(1, 2, 1, 1)
             output = model(inputs)
             tet_loss = 0.0
             loss = 0.0
@@ -785,9 +802,10 @@ def train_epoch(
             else:
                 loss = loss_fn(output, target)
             if args.TET_loss_second:
-                y = torch.zeros_like(output[-1]).fill_(args.threshold)
+                t_output = torch.stack(output,dim=0)
+                y = torch.zeros_like(t_output).fill_(args.threshold)
                 secondLoss = torch.nn.MSELoss()
-                tet_loss_second = secondLoss(output[-1], y)
+                tet_loss_second = secondLoss(t_output, y)
                 loss += lamb * tet_loss_second
             if args.TET_loss_first or args.TET_loss_second:
                 output = sum(output) / len(output)
@@ -809,7 +827,6 @@ def train_epoch(
             losses_m.update(loss.item(), inputs.size(0))
             top1_m.update(acc1.item(), inputs.size(0))
             top5_m.update(acc5.item(), inputs.size(0))
-            closses_m.update(closs.item(), inputs.size(0))
 
             spike_rate_avg_layer = model.get_fire_rate().tolist()
             spike_rate_avg_layer_str = ['{:.3f}'.format(i) for i in spike_rate_avg_layer]
@@ -852,14 +869,12 @@ def train_epoch(
             if args.distributed:
                 reduced_loss = reduce_tensor(loss.data, args.world_size)
                 losses_m.update(reduced_loss.item(), inputs.size(0))
-                closses_m.update(reduced_loss.item(), inputs.size(0))
 
             if args.local_rank == 0:
                 if args.distributed:
                     _logger.info(
                         'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
                         'Loss: {loss.val:>9.6f} ({loss.avg:>6.4f})  '
-                        'cLoss: {closs.val:>9.6f} ({closs.avg:>6.4f})  '
                         'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
                         'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})  '
                         'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
@@ -870,7 +885,6 @@ def train_epoch(
                             batch_idx, len(loader),
                             100. * batch_idx / last_idx,
                             loss=losses_m,
-                            closs=closses_m,
                             top1=top1_m,
                             top5=top5_m,
                             batch_time=batch_time_m,
@@ -883,33 +897,21 @@ def train_epoch(
                     _logger.info(
                         'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
                         'Loss: {loss.val:>9.6f} ({loss.avg:>6.4f})  '
-                        'cLoss: {closs.val:>9.6f} ({closs.avg:>6.4f})  '
                         'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
                         'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})  '
                         'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
                         '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
-                        'LR: {lr:.3e}  '
-                        'Data: {data_time.val:.3f} ({data_time.avg:.3f})\n'
-                        'Fire_rate: {spike_rate}\n'
-                        'Thres: {threshold}\n'
-                        'Mu: {mu_str}\n'
-                        'Sigma: {sigma_str}\n'.format(
+                        'LR: {lr:.3e}  '.format(
                             epoch,
                             batch_idx, len(loader),
-                            100. * batch_idx / last_idx,
+                            100.,  # 原来是last_idx
                             loss=losses_m,
-                            closs=closses_m,
                             top1=top1_m,
                             top5=top5_m,
                             batch_time=batch_time_m,
                             rate=inputs.size(0) * args.world_size / batch_time_m.val,
                             rate_avg=inputs.size(0) * args.world_size / batch_time_m.avg,
                             lr=lr,
-                            data_time=data_time_m,
-                            spike_rate=spike_rate_avg_layer_str,
-                            threshold=threshold_str,
-                            mu_str=mu_str,
-                            sigma_str=sigma_str
                         ))
 
                 if args.save_images and output_dir:
@@ -939,7 +941,6 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
              log_suffix='', visualize=False, spike_rate=False, tsne=False, conf_mat=False):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
-    closses_m = AverageMeter()
     top1_m = AverageMeter()
     top5_m = AverageMeter()
 
@@ -969,6 +970,10 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
                     #     model.set_requires_fp(False)
 
             with amp_autocast():
+                if args.dataset == "cifar10" or args.dataset == "CALTECH101" or args.dataset == "RGBCEPDVS":
+                    inputs = inputs[:, 0:2, :, :]
+                if args.dataset == "omni" or args.dataset == "mnist":
+                    inputs = inputs.repeat(1, 2, 1, 1)
                 output = model(inputs)
             if args.TET_loss_first or args.TET_loss_second:
                 output = sum(output) / len(output)
@@ -1035,7 +1040,6 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
             losses_m.update(reduced_loss.item(), inputs.size(0))
             top1_m.update(acc1.item(), output.size(0))
             top5_m.update(acc5.item(), output.size(0))
-            closses_m.update(closs.item(), inputs.size(0))
 
             batch_time_m.update(time.time() - end)
             end = time.time()
@@ -1055,7 +1059,6 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
                         '{0}: [{1:>4d}/{2}]  '
                         'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
                         'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
-                        'cLoss: {closs.val:>7.4f} ({closs.avg:>6.4f})  '
                         'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})'
                         'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})'.format(
                             log_name,
@@ -1063,7 +1066,6 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
                             last_idx,
                             batch_time=batch_time_m,
                             loss=losses_m,
-                            closs=closses_m,
                             top1=top1_m,
                             top5=top5_m,
                             ))
@@ -1072,27 +1074,15 @@ def validate(epoch, model, loader, loss_fn, args, amp_autocast=suppress,
                         '{0}: [{1:>4d}/{2}]  '
                         'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
                         'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
-                        'cLoss: {closs.val:>7.4f} ({closs.avg:>6.4f})  '
                         'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})'
-                        'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})\n'
-                        'Fire_rate: {spike_rate}\n'
-                        'Tot_spike: {tot_spike}\n'
-                        'Thres: {threshold}\n'
-                        'Mu: {mu_str}\n'
-                        'Sigma: {sigma_str}\n'.format(
+                        'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})\n'.format(
                             log_name,
                             batch_idx,
                             last_idx,
                             batch_time=batch_time_m,
                             loss=losses_m,
-                            closs=closses_m,
                             top1=top1_m,
                             top5=top5_m,
-                            spike_rate=spike_rate_avg_layer_str,
-                            tot_spike=tot_spike,
-                            threshold=threshold_str,
-                            mu_str=mu_str,
-                            sigma_str=sigma_str
                         ))
 
     # metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])

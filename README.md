@@ -106,3 +106,13 @@ python main_visual_losslandscape.py --model VGG_SNN --node-type LIFNode --source
 | Bird     | 101, 191,151          |      |
 | Dog      | 56, 80, 20            |      |
 
+
+
+
+
+## N-omniglot
+
+```shell
+python main.py --model SCNN --node-type LIFNode --dataset nomni --step 12 --batch-size 64 --num-classes 1623 --act-fun QGateGrad --epochs 200 --device 6 --log-interval 200 --smoothing 0.0 --seed 42 --TET-loss-first --TET-loss-second
+```
+

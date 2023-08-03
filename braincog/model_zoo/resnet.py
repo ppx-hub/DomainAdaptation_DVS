@@ -237,6 +237,7 @@ class ResNet(BaseModule):
         self.dilation = 1
 
         self.node = kwargs['node_type']
+        self.TET_loss = kwargs['TET_loss'] if 'TET_loss' in kwargs else False
         if issubclass(self.node, BaseNode):
             self.node = partial(self.node, **kwargs)
 
@@ -253,7 +254,7 @@ class ResNet(BaseModule):
         self.static_data = False
 
         self.dataset = kwargs['dataset']
-        if self.dataset == 'dvsg' or self.dataset == 'dvsc10' or self.dataset == 'NCALTECH101' or self.dataset == 'NCARS' or self.dataset == 'DVSG':
+        if self.dataset == 'dvsg' or self.dataset == 'dvsc10' or self.dataset == 'NCALTECH101' or self.dataset == 'NCARS' or self.dataset == 'DVSG' or self.dataset == 'CEPDVS' or self.dataset == 'RGBCEPDVS':
             self.conv1 = nn.Conv2d(2 * self.init_channel_mul,
                                    self.inplanes,
                                    kernel_size=3,
@@ -439,8 +440,10 @@ class ResNet(BaseModule):
                 x = self.vote(x)
 
                 outputs.append(x)
-
-            return sum(outputs) / len(outputs)
+            if self.TET_loss is True:
+                return outputs
+            else:
+                return sum(outputs) / len(outputs)
 
 
 class Transfer_ResNet(BaseModule):
@@ -514,7 +517,8 @@ class Transfer_ResNet(BaseModule):
         self.static_data = False
 
         self.dataset = kwargs['dataset']
-        if self.dataset == 'dvsg' or self.dataset == 'dvsc10' or self.dataset == 'NCALTECH101' or self.dataset == 'NCARS' or self.dataset == 'DVSG':
+        if self.dataset == 'dvsg' or self.dataset == 'dvsc10' or self.dataset == 'NCALTECH101' or self.dataset == 'NCARS' or self.dataset == 'DVSG'\
+                or self.dataset == "CEPDVS":
             self.conv1 = nn.Conv2d(2 * self.init_channel_mul,
                                    self.inplanes,
                                    kernel_size=3,
@@ -688,19 +692,22 @@ class Transfer_ResNet(BaseModule):
                 x = self.layer3(x)
                 x = self.layer4(x)
 
-                outputs_rgb_feature.append(x)
-
                 x = self.bn1(x)
                 # x = self.node1(x)
                 x = self.avgpool(x)
 
                 x = torch.flatten(x, 1)
+
+                outputs_rgb_feature.append(x)
+
                 x = self.fc(x)
 
                 x = self.node2(x)
                 x = self.vote(x)
 
                 outputs_rgb.append(x)
+
+            self.reset()
 
             for t in range(step):
                 x = inputs_dvs[t]
@@ -712,13 +719,14 @@ class Transfer_ResNet(BaseModule):
                 x = self.layer3(x)
                 x = self.layer4(x)
 
-                outputs_dvs_feature.append(x)
-
                 x = self.bn1(x)
                 # x = self.node1(x)
                 x = self.avgpool(x)
 
                 x = torch.flatten(x, 1)
+
+                outputs_dvs_feature.append(x)
+
                 x = self.fc(x)
 
                 x = self.node2(x)
@@ -759,6 +767,10 @@ def resnet18(pretrained=False, **kwargs):
 @register_model
 def Transfer_ResNet18(pretrained=False, **kwargs):
     return _transfer_resnet('resnet18', BasicBlock, [2, 2, 2, 2], pretrained, **kwargs)
+
+@register_model
+def Transfer_ResNet34(pretrained=False, **kwargs):
+    return _transfer_resnet('resnet34', BasicBlock, [3, 4, 6, 3], pretrained, **kwargs)
 
 @register_model
 def resnet34_half(pretrained=False, **kwargs):

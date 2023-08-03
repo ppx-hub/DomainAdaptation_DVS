@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-            
-# Time : 2022/11/1 11:06
-# Author : Regulus
-# FileName: reconstructed_ES_imagenet.py
-# Explain: 
-# Software: PyCharm
-
 import numpy as np
 import torch
 import linecache
